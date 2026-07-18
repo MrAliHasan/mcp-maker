@@ -6,7 +6,8 @@
 [![Python 3.10+](https://img.shields.io/pypi/pyversions/mcp-maker.svg)](https://pypi.org/project/mcp-maker/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MrAliHasan/mcp-maker/blob/main/LICENSE)
 [![Downloads](https://img.shields.io/pypi/dm/mcp-maker.svg)](https://pypi.org/project/mcp-maker/)
-[![MCPWorld](https://img.shields.io/badge/MCPWorld-A%20·%20High%20Quality-2ea44f)](https://www.mcpworld.com/zh/detail/e387fc9987c2a7da5b970c77ec14de99)
+
+[![MCPWorld Rating](https://img.shields.io/badge/MCPWorld-A%20%C2%B7%20HIGH%20QUALITY-2ea44f?style=for-the-badge&logo=checkmarx&logoColor=white)](https://www.mcpworld.com/zh/detail/e387fc9987c2a7da5b970c77ec14de99)
 
 **Connect Claude, Cursor, ChatGPT, Grok & DeepSeek to your data in under 60 seconds.**
 
@@ -30,7 +31,13 @@ Restart Claude - it can now query your database.
 | MongoDB    | HubSpot             |                             |
 | Redis      | Supabase            |                             |
 
-**379 tests · MIT licensed · Zero runtime dependency on MCP-Maker · Rated [A – High Quality on MCPWorld](https://www.mcpworld.com/zh/detail/e387fc9987c2a7da5b970c77ec14de99)** ("rigorously validated, comprehensive functionality, high-quality user experience")
+**379 tests · MIT licensed · Zero runtime dependency on MCP-Maker**
+
+> ### 🏆 Rated **A – High Quality** by [MCPWorld](https://www.mcpworld.com/zh/detail/e387fc9987c2a7da5b970c77ec14de99)
+>
+> *"This MCP Server has been rigorously validated and offers comprehensive functionality and a high-quality user experience."*
+>
+> ✔ Availability verified &nbsp; ✔ Practical tools &nbsp; ✔ User-friendly installation &nbsp; ✔ Detailed service docs
 
 ---
 
