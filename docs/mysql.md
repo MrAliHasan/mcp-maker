@@ -47,6 +47,13 @@ mcp-maker init mysql://user:pass@localhost:3306/mariadb_app
 
 ## Generated Tools
 
+### New in 0.2.7
+
+- `distinct_{table}(field, limit)` — distinct values of any column
+- **Views are now discovered** and get read tools
+- Fixed: passwords with special characters (`@`, `%`, `/`) now work when percent-encoded
+- Connections now use `utf8mb4`
+
 Same as SQLite and PostgreSQL — for each table:
 
 ### Read Tools

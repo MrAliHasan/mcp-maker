@@ -2,7 +2,7 @@
 MCP-Maker MySQL Connector — Inspect MySQL databases.
 """
 
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from ..core.schema import (
     Column,
@@ -28,15 +28,31 @@ class MySQLConnector(BaseConnector):
         return "mysql"
 
     def _parse_uri(self) -> dict:
-        """Parse MySQL URI into connection parameters."""
+        """Parse MySQL URI into connection parameters.
+
+        Credentials are URL-decoded so passwords containing special
+        characters (@, %, /, …) work when percent-encoded in the URI.
+        """
         parsed = urlparse(self.uri)
+        database = unquote(parsed.path.lstrip("/"))
+        if not database:
+            raise ValueError(
+                "MySQL URI must include a database name. "
+                "Example: mysql://user:pass@localhost:3306/mydb"
+            )
         return {
             "host": parsed.hostname or "localhost",
             "port": parsed.port or 3306,
-            "user": parsed.username or "root",
-            "password": parsed.password or "",
-            "database": parsed.path.lstrip("/"),
+            "user": unquote(parsed.username) if parsed.username else "root",
+            "password": unquote(parsed.password) if parsed.password else "",
+            "database": database,
+            "charset": "utf8mb4",
         }
+
+    @staticmethod
+    def _quote_ident(name: str) -> str:
+        """Safely quote a MySQL identifier (escapes embedded backticks)."""
+        return "`" + name.replace("`", "``") + "`"
 
     def validate(self) -> bool:
         """Check that the MySQL database is accessible."""
@@ -74,22 +90,23 @@ class MySQLConnector(BaseConnector):
 
         tables = []
 
-        # Get all tables
+        # Get all tables and views
         cursor.execute(
             """
-            SELECT TABLE_NAME, TABLE_COMMENT
+            SELECT TABLE_NAME, TABLE_COMMENT, TABLE_TYPE
             FROM information_schema.TABLES
             WHERE TABLE_SCHEMA = %s
-              AND TABLE_TYPE = 'BASE TABLE'
+              AND TABLE_TYPE IN ('BASE TABLE', 'VIEW')
             ORDER BY TABLE_NAME
             """,
             (db_name,),
         )
         table_rows = cursor.fetchall()
-        table_names = [row["TABLE_NAME"] for row in table_rows]
+        table_names = [r["TABLE_NAME"] for r in table_rows if r["TABLE_TYPE"] == "BASE TABLE"]
+        view_names = [r["TABLE_NAME"] for r in table_rows if r["TABLE_TYPE"] == "VIEW"]
         table_comments = {row["TABLE_NAME"]: row["TABLE_COMMENT"] for row in table_rows if row["TABLE_COMMENT"]}
 
-        for table_name in table_names:
+        for table_name in table_names + view_names:
             # Get columns with primary key info
             cursor.execute(
                 """
@@ -121,17 +138,21 @@ class MySQLConnector(BaseConnector):
             # Get row count
             try:
                 cursor.execute(
-                    f"SELECT COUNT(*) as cnt FROM `{table_name}`"
+                    f"SELECT COUNT(*) as cnt FROM {self._quote_ident(table_name)}"
                 )
                 row_count = cursor.fetchone()["cnt"]
             except Exception:
                 row_count = None
 
+            description = table_comments.get(table_name)
+            if table_name in view_names:
+                description = description or "view (read-only)"
+
             tables.append(Table(
                 name=table_name,
                 columns=columns,
                 row_count=row_count,
-                description=table_comments.get(table_name),
+                description=description,
             ))
 
         # Discover foreign key relationships
@@ -172,6 +193,7 @@ class MySQLConnector(BaseConnector):
                 "database": db_name,
                 "host": params["host"],
                 "port": params["port"],
+                "views": view_names,
             },
         )
 

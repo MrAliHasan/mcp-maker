@@ -244,17 +244,53 @@ def filter_{{ table.name }}(property_name: str, value: str) -> list[dict]:
 
 {% if 'read' in tbl_ops %}
 @mcp.tool()
-def count_{{ table.name }}() -> int:
-    """Get the total number of pages in '{{ table.description }}'."""
+def count_{{ table.name }}() -> dict:
+    """Get the total number of pages in '{{ table.description }}'.
+
+    Counting is capped at 10,000 pages to avoid hammering the Notion API;
+    'exact' is False when the cap was hit.
+    """
     count = 0
     has_more = True
     cursor = None
-    while has_more:
+    while has_more and count < 10000:
         result = list_{{ table.name }}(limit=100, start_cursor=cursor)
         count += len(result["results"])
         has_more = result["has_more"]
         cursor = result.get("next_cursor")
-    return count
+    return {"count": count, "exact": not has_more}
+
+@mcp.tool()
+def distinct_{{ table.name }}(property_name: str, limit: int = 100) -> list:
+    """Get the distinct values of a property in '{{ table.description }}'.
+
+    Args:
+        property_name: Safe property name (e.g. 'status', 'assignee').
+        limit: Maximum distinct values to return.
+
+    Note: computed from up to 1,000 pages — an approximation on
+    larger databases.
+    """
+    if property_name not in _{{ table.name }}_props:
+        raise ValueError(f"Invalid property: {property_name}. Available: {', '.join(_{{ table.name }}_props)}")
+    seen = []
+    fetched = 0
+    has_more = True
+    cursor = None
+    while has_more and fetched < 1000:
+        result = list_{{ table.name }}(limit=100, start_cursor=cursor)
+        for page in result["results"]:
+            fetched += 1
+            v = page.get(property_name)
+            candidates = v if isinstance(v, list) else [v]
+            for c in candidates:
+                if c not in seen:
+                    seen.append(c)
+                    if len(seen) >= limit:
+                        return seen
+        has_more = result["has_more"]
+        cursor = result.get("next_cursor")
+    return seen
 {% endif %}
 
 
@@ -282,6 +318,7 @@ def schema_{{ table.name }}() -> dict:
 
 
 {% if 'insert' in tbl_ops or 'update' in tbl_ops or 'delete' in tbl_ops %}
+{% if 'insert' in tbl_ops %}
 @mcp.tool()
 def create_{{ table.name }}({% for col in table.columns %}{{ col.name }}: str | None = None{{ ', ' if not loop.last else '' }}{% endfor %}) -> dict:
     """Create a new page in '{{ table.description }}'.

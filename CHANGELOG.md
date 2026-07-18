@@ -4,6 +4,40 @@ All notable changes to MCP-Maker will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.7] - 2026-07-19
+
+A full audit of all 13 connectors and their code-generation templates: 20+ bug fixes (several of them crashes in generated servers) and new query tools across every connector.
+
+### Added
+- **`mcp-maker chat` now supports Grok (xAI) and DeepSeek** — auto-detected from `xai-` key prefixes or the `XAI_API_KEY` / `DEEPSEEK_API_KEY` env vars, with `--provider grok|deepseek` for explicit selection.
+- **`distinct_{table}` tool** for SQLite, PostgreSQL, MySQL, MongoDB, Files, Excel, Google Sheets, Airtable, Notion, and Supabase — distinct values of any column/field/property.
+- **`aggregate_{table}` tool** for Files, Excel, Google Sheets, and Airtable (count/sum/avg/min/max with GROUP BY semantics) — SQL and MongoDB already had it.
+- **`filter_{table}` tool** for Files, Excel, and Google Sheets — operator-based filtering (eq/ne/gt/gte/lt/lte/contains).
+- **View discovery** for SQLite, PostgreSQL (incl. materialized views), and MySQL — views get read tools and are marked read-only.
+- **Single-file mode** — `mcp-maker init ./users.csv` works directly on a CSV/TSV/JSON/JSONL file, no directory needed.
+- **TSV and JSONL support** in the Files connector (JSONL previously failed silently and became a blob resource).
+- **MongoDB Atlas** — `mongodb+srv://` connection strings are now registered.
+- **OpenAPI**: `$ref` schema resolution, Swagger 2.x `in: body` parameters, path-level shared parameters, a generic `call_api` escape-hatch tool, and three auth styles (`API_TOKEN` Bearer / `API_KEY`+`API_KEY_HEADER` / `API_KEY`+`API_KEY_QUERY`).
+- **Redis**: `key_info` (type/TTL/memory), `scan_keys` (glob pattern scan), and `set_expiry` tools.
+- **Google Sheets**: numeric-aware `sort_field`/`sort_direction` on `list_`.
+- **Template render test suite** — every connector's templates are rendered with synthetic schemas and syntax-checked (39 new test cases), plus new connector tests (367 total).
+
+### Fixed
+- **Notion generation crashed entirely** — an unbalanced Jinja block in the Notion template raised `TemplateSyntaxError` on every `mcp-maker init notion://…`.
+- **Files servers: `count_`, `search_`, and `get_by_row` were broken** — they treated the paginated dict returned by `list_` as a list (count always returned 4; search/get crashed or returned garbage).
+- **Airtable `search_` crashed at runtime** for the same dict-vs-list reason.
+- **Google Sheets `count_` returned the grid size** (often the default 1000) instead of actual data rows; sheets with duplicate/empty headers broke reads.
+- **Supabase `search_` required every text column to match** (chained `.or_()` calls are ANDed) — now matches any column; `validate()` no longer reports success with a wrong API key.
+- **PostgreSQL `?schema=` URI option broke the connection** (passed through to libpq as an unknown option).
+- **MySQL passwords with special characters failed** (credentials weren't URL-decoded); empty database names now raise a clear error; connections use `utf8mb4`.
+- **Redis dropped the username from ACL-style URIs**; connection params (including password) are no longer stored in schema metadata.
+- **Excel** dates/datetimes were typed as strings; duplicate headers collided; generated data keys didn't match tool schemas after sanitization; int+float columns are now FLOAT.
+- **Airtable/Notion `init` no longer downloads entire bases** just to count rows (capped at 1,000 records / 10 pages).
+- **HubSpot** custom objects with special characters produced invalid tools calling wrong endpoints; failed counts report unknown instead of 0.
+- **MongoDB** collection names are sanitized (with a name map so queries still hit the real collection); a null in the first sampled document no longer locks a field's type to `unknown`.
+- **SQLite** inspection opens the database read-only and safely escapes quoted identifiers.
+- Registry: `gsheet://`, `hubspot://`, and `mongodb+srv://` URIs now give correct `pip install` hints when dependencies are missing.
+
 ## [0.2.6] - 2026-03-13
 
 ### Added

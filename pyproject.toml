@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-maker"
-version = "0.2.6"
+version = "0.2.7"
 description = "Auto-generate MCP servers from any data source. Zero code required."
 readme = "README.md"
 license = "MIT"
@@ -15,7 +15,12 @@ authors = [
 maintainers = [
     { name = "Ali Hassan", email = "mrali.hassan997@gmail.com" },
 ]
-keywords = ["mcp", "model-context-protocol", "ai", "llm", "claude", "server", "generator"]
+keywords = [
+    "mcp", "mcp-server", "mcp-maker", "model-context-protocol", "ai", "llm",
+    "claude", "chatgpt", "cursor", "grok", "deepseek", "openrouter",
+    "server", "generator", "database", "postgres", "mysql", "sqlite",
+    "mongodb", "airtable", "notion",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

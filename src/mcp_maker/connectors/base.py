@@ -85,20 +85,23 @@ def get_connector(uri: str) -> BaseConnector:
         if scheme in _CONNECTOR_REGISTRY:
             return _CONNECTOR_REGISTRY[scheme](uri)
 
-        # Dependency hints
+        # Dependency hints — keys must match actual URI schemes
         hints = {
             "postgres": "pip install mcp-maker[postgres]",
             "postgresql": "pip install mcp-maker[postgres]",
             "mysql": "pip install mcp-maker[mysql]",
             "airtable": "pip install mcp-maker[airtable]",
+            "gsheet": "pip install mcp-maker[gsheets]",
             "gsheets": "pip install mcp-maker[gsheets]",
             "notion": "pip install mcp-maker[notion]",
             "excel": "pip install mcp-maker[excel]",
             "mongodb": "pip install mcp-maker[mongodb]",
+            "mongodb+srv": "pip install mcp-maker[mongodb]",
             "supabase": "pip install mcp-maker[supabase]",
             "openapi": "pip install mcp-maker[openapi]",
             "redis": "pip install mcp-maker[redis]",
             "rediss": "pip install mcp-maker[redis]",
+            "hubspot": "pip install mcp-maker[hubspot]",
         }
         if scheme in hints:
             raise ValueError(f"Missing dependencies for {scheme}. Please install them: {hints[scheme]}")
@@ -108,7 +111,7 @@ def get_connector(uri: str) -> BaseConnector:
         if "files" in _CONNECTOR_REGISTRY:
             return _CONNECTOR_REGISTRY["files"](uri)
 
-    # Check if it's a .db or .sqlite file → SQLiteConnector
+    # Check file extension for known single-file formats
     if os.path.isfile(uri):
         ext = os.path.splitext(uri)[1].lower()
         if ext in (".db", ".sqlite", ".sqlite3"):
@@ -117,6 +120,9 @@ def get_connector(uri: str) -> BaseConnector:
         if ext in (".xlsx", ".xlsm", ".xltx", ".xltm"):
             if "excel" in _CONNECTOR_REGISTRY:
                 return _CONNECTOR_REGISTRY["excel"](f"excel:///{uri}")
+        if ext in (".csv", ".tsv", ".json", ".jsonl"):
+            if "files" in _CONNECTOR_REGISTRY:
+                return _CONNECTOR_REGISTRY["files"](uri)
 
     raise ValueError(
         f"No connector found for URI: {uri}\n"

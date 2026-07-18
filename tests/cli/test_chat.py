@@ -66,6 +66,23 @@ def test_db():
 # ──── _resolve_db_path Tests ────
 
 
+def _simple_schema(test_db):
+    return DataSourceSchema(
+        source_type="sqlite",
+        source_uri=f"sqlite:///{test_db}",
+        tables=[
+            Table(
+                name="users",
+                columns=[
+                    Column(name="id", type=ColumnType.INTEGER, nullable=False, primary_key=True),
+                    Column(name="name", type=ColumnType.STRING, nullable=False),
+                ],
+                row_count=1,
+            ),
+        ],
+    )
+
+
 class TestResolveDbPath:
 
     def test_sqlite_triple_slash(self, sample_schema):
@@ -232,6 +249,76 @@ class TestChatCommand:
                 input="\x04",
             )
             assert "OpenAI" in result.output
+
+    def test_grok_autodetect_from_key(self, test_db):
+        """xai- prefix should auto-detect the Grok provider."""
+        with (
+            patch("mcp_maker.cli.chat.get_connector") as mock_conn,
+            patch.dict("sys.modules", {"openai": MagicMock()}),
+        ):
+            mock_connector = MagicMock()
+            mock_conn.return_value = mock_connector
+            mock_connector.inspect.return_value = _simple_schema(test_db)
+            result = runner.invoke(
+                app,
+                ["chat", f"sqlite:///{test_db}", "--api-key", "xai-test123"],
+                input="\x04",
+            )
+            assert "Grok" in result.output
+            assert "grok-3-mini" in result.output
+
+    def test_deepseek_provider_flag(self, test_db):
+        """--provider deepseek selects DeepSeek even with an sk- key."""
+        with (
+            patch("mcp_maker.cli.chat.get_connector") as mock_conn,
+            patch.dict("sys.modules", {"openai": MagicMock()}),
+        ):
+            mock_connector = MagicMock()
+            mock_conn.return_value = mock_connector
+            mock_connector.inspect.return_value = _simple_schema(test_db)
+            result = runner.invoke(
+                app,
+                ["chat", f"sqlite:///{test_db}", "--api-key", "sk-test123", "--provider", "deepseek"],
+                input="\x04",
+            )
+            assert "DeepSeek" in result.output
+            assert "deepseek-chat" in result.output
+
+    def test_deepseek_env_var_fallback(self, test_db):
+        """DEEPSEEK_API_KEY env var selects the DeepSeek provider."""
+        with (
+            patch("mcp_maker.cli.chat.get_connector") as mock_conn,
+            patch.dict("sys.modules", {"openai": MagicMock()}),
+            patch.dict("os.environ", {"DEEPSEEK_API_KEY": "sk-ds-test"}, clear=False),
+        ):
+            import os as _os
+            _os.environ.pop("OPENAI_API_KEY", None)
+            _os.environ.pop("OPENROUTER_API_KEY", None)
+            _os.environ.pop("XAI_API_KEY", None)
+            _os.environ.pop("GROK_API_KEY", None)
+            mock_connector = MagicMock()
+            mock_conn.return_value = mock_connector
+            mock_connector.inspect.return_value = _simple_schema(test_db)
+            result = runner.invoke(
+                app,
+                ["chat", f"sqlite:///{test_db}"],
+                input="\x04",
+            )
+            assert "DeepSeek" in result.output
+
+    def test_invalid_provider_rejected(self, test_db):
+        """An unknown --provider value exits with an error."""
+        with (
+            patch("mcp_maker.cli.chat.get_connector") as mock_conn,
+            patch.dict("sys.modules", {"openai": MagicMock()}),
+        ):
+            mock_conn.return_value = MagicMock()
+            result = runner.invoke(
+                app,
+                ["chat", f"sqlite:///{test_db}", "--api-key", "sk-x", "--provider", "gemini"],
+            )
+            assert result.exit_code != 0
+            assert "Unknown provider" in result.output
 
     def test_empty_tables_rejected(self, test_db):
         """Should fail if no tables found."""

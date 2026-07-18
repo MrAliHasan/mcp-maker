@@ -100,6 +100,18 @@ mcp-maker init ./my-data/
 
 ### Generated tools
 
+**New in 0.2.7:**
+
+```
+filter_customers(field, value, operator)   → eq/ne/gt/gte/lt/lte/contains filtering
+aggregate_customers(group_by, agg_function, agg_column) → count/sum/avg/min/max
+distinct_customers(field)                  → Distinct values of a column
+```
+
+- **TSV and JSONL files** are now supported alongside CSV and JSON
+- **Single-file mode**: `mcp-maker init ./users.csv` works without a directory
+- Column headers are sanitized (`First Name` → `first_name`) and de-duplicated
+
 **For CSV/JSON tables:**
 
 ```

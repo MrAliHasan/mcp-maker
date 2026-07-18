@@ -156,17 +156,98 @@ def search_{{ table.name }}(query: str, limit: int = {{ default_limit }}) -> lis
         query: Search text (case-insensitive, matches any text field).
         limit: Maximum results to return.
     """
-    all_records = list_{{ table.name }}(limit=10000)
+    limit = min(limit, {{ max_limit }})
+    tbl = base.table(TABLE_NAMES["{{ table.name }}"])
     query_lower = query.lower()
     results = []
-    for record in all_records:
-        for value in record.values():
-            if value and query_lower in str(value).lower():
-                results.append(record)
+    for record in tbl.all(max_records=1000):
+        normalized = _normalize_{{ table.name }}(record)
+        if any(v is not None and query_lower in str(v).lower() for v in normalized.values()):
+            results.append(normalized)
+            if len(results) >= limit:
                 break
-        if len(results) >= limit:
-            break
     return results
+
+@mcp.tool()
+def distinct_{{ table.name }}(field: str, limit: int = 100) -> list:
+    """Get the distinct values of a field in '{{ table.description }}'.
+
+    Args:
+        field: Safe field name (e.g. 'status', 'city').
+        limit: Maximum distinct values to return.
+
+    Note: computed from up to 1,000 records — an approximation on
+    larger tables.
+    """
+    if field not in _{{ table.name }}_fields:
+        raise ValueError(f"Invalid field: {field}. Available: {', '.join(_{{ table.name }}_fields)}")
+    original = _{{ table.name }}_fields[field]
+    tbl = base.table(TABLE_NAMES["{{ table.name }}"])
+    seen = []
+    for record in tbl.all(fields=[original], max_records=1000):
+        v = record.get("fields", {}).get(original)
+        if isinstance(v, list):
+            candidates = v
+        else:
+            candidates = [v]
+        for c in candidates:
+            if c not in seen:
+                seen.append(c)
+                if len(seen) >= limit:
+                    return seen
+    return seen
+
+@mcp.tool()
+def aggregate_{{ table.name }}(group_by: str, agg_function: str = "count", agg_field: str | None = None, limit: int = 20) -> list[dict]:
+    """Aggregate '{{ table.description }}' records grouped by a field.
+
+    Args:
+        group_by: Safe field name to group by.
+        agg_function: 'count', 'sum', 'avg', 'min', or 'max'.
+        agg_field: Safe field name to aggregate (required for sum/avg/min/max).
+        limit: Maximum groups to return.
+
+    Note: computed from up to 1,000 records — an approximation on
+    larger tables.
+    """
+    if group_by not in _{{ table.name }}_fields:
+        raise ValueError(f"Invalid group_by: {group_by}. Available: {', '.join(_{{ table.name }}_fields)}")
+    agg_function = agg_function.lower()
+    if agg_function not in ("count", "sum", "avg", "min", "max"):
+        raise ValueError(f"Invalid agg_function: {agg_function}. Use: count, sum, avg, min, max")
+    if agg_function != "count" and not agg_field:
+        raise ValueError(f"agg_field is required for {agg_function}")
+    tbl = base.table(TABLE_NAMES["{{ table.name }}"])
+    groups: dict = {}
+    for record in tbl.all(max_records=1000):
+        normalized = _normalize_{{ table.name }}(record)
+        key = normalized.get(group_by)
+        if isinstance(key, list):
+            key = ", ".join(str(k) for k in key)
+        if agg_function == "count":
+            groups[key] = groups.get(key, 0) + 1
+        else:
+            try:
+                num = float(normalized.get(agg_field))
+            except (TypeError, ValueError):
+                continue
+            groups.setdefault(key, []).append(num)
+
+    results = []
+    for key, val in groups.items():
+        if agg_function == "count":
+            value = val
+        elif agg_function == "sum":
+            value = sum(val)
+        elif agg_function == "avg":
+            value = sum(val) / len(val) if val else None
+        elif agg_function == "min":
+            value = min(val) if val else None
+        else:
+            value = max(val) if val else None
+        results.append({"group": key, "value": value})
+    results.sort(key=lambda r: (r["value"] is None, r["value"]), reverse=True)
+    return results[:min(limit, 100)]
 {% endif %}
 
 

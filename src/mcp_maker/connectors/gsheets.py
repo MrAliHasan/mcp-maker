@@ -171,48 +171,40 @@ class GoogleSheetsConnector(BaseConnector):
             safe_name = _sanitize_name(original_name)
             sheet_name_map[safe_name] = original_name
 
-            # Get all records (first row = headers)
+            # Get all values (first row = headers). get_all_values tolerates
+            # duplicate/empty headers, unlike get_all_records which raises
+            # and previously caused such sheets to be silently skipped.
             try:
-                records = worksheet.get_all_records()
+                values = worksheet.get_all_values()
             except Exception:
-                # Skip sheets with no headers or weird formats
                 continue
 
-            if not records:
-                # Empty sheet — still create table with headers if available
-                try:
-                    headers = worksheet.row_values(1)
-                except Exception:
-                    continue
-                if not headers:
-                    continue
-
-                columns = [
-                    Column(
-                        name=_sanitize_name(h),
-                        type=ColumnType.STRING,
-                        nullable=True,
-                        primary_key=False,
-                        description=h,
-                    )
-                    for h in headers if h.strip()
-                ]
-                tables.append(Table(
-                    name=safe_name,
-                    columns=columns,
-                    row_count=0,
-                    description=original_name,
-                ))
+            if not values or not any(h.strip() for h in values[0]):
                 continue
 
-            # Infer column types from data
-            headers = list(records[0].keys())
-            columns = []
+            headers = [h.strip() for h in values[0]]
+            data_rows = values[1:]
+
+            # Sanitize + de-duplicate column names
+            safe_headers: list[str] = []
+            used: dict[str, int] = {}
             for h in headers:
-                values = [r.get(h) for r in records]
-                col_type = _infer_type(values)
+                safe = _sanitize_name(h) if h else "_unnamed"
+                if safe in used:
+                    used[safe] += 1
+                    safe = f"{safe}_{used[safe]}"
+                else:
+                    used[safe] = 1
+                safe_headers.append(safe)
+
+            columns = []
+            for idx, (h, safe) in enumerate(zip(headers, safe_headers)):
+                if not h:
+                    continue  # skip truly empty header columns
+                col_values = [row[idx] if idx < len(row) else None for row in data_rows]
+                col_type = _infer_type(col_values) if data_rows else ColumnType.STRING
                 columns.append(Column(
-                    name=_sanitize_name(h),
+                    name=safe,
                     type=col_type,
                     nullable=True,
                     primary_key=False,
@@ -222,7 +214,7 @@ class GoogleSheetsConnector(BaseConnector):
             tables.append(Table(
                 name=safe_name,
                 columns=columns,
-                row_count=len(records),
+                row_count=len(data_rows),
                 description=original_name,
             ))
 

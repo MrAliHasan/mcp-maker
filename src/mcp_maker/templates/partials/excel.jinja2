@@ -14,15 +14,26 @@ _EXCEL_DATA = {}
 
 {% for table in tables %}
 {% set tbl_ops = rbac_config.get(table.name | lower, ops) if rbac_config else ops %}
-_sheet = _wb["{{ table.description }}"]
-_rows = list(_sheet.iter_rows(values_only=True))
-_headers = [str(h).strip() if h is not None else f"col_{i}" for i, h in enumerate(_rows[0])] if _rows else []
+# Rows are keyed by the sanitized column names used in the tool schemas,
+# mapped positionally — not by re-reading raw headers at runtime.
+_cols = [{% for col in table.columns %}"{{ col.name }}", {% endfor %}]
+_rows_iter = _wb["{{ table.description }}"].iter_rows(values_only=True)
+next(_rows_iter, None)  # skip header row
 _EXCEL_DATA["{{ table.name }}"] = [
-    {_headers[j]: (v if v is not None else "") for j, v in enumerate(row)}
-    for row in _rows[1:]
+    {c: (row[i] if i < len(row) else None) for i, c in enumerate(_cols)}
+    for row in _rows_iter
     if any(v is not None for v in row)
 ]
 {% endfor %}
+
+def _xl_sort_key(value):
+    """Sort mixed data numerically when possible, else as strings."""
+    if value is None or value == "":
+        return (2, "")
+    try:
+        return (0, float(value))
+    except (TypeError, ValueError):
+        return (1, str(value).lower())
 
 _wb.close()
 
@@ -57,7 +68,7 @@ def list_{{ table.name }}(limit: int = {{ default_limit }}, offset: int = 0, sor
         data = _EXCEL_DATA.get("{{ table.name }}", [])
         total = len(data)
         if sort_field:
-            data = sorted(data, key=lambda r: str(r.get(sort_field, "")), reverse=(sort_direction.lower() == "desc"))
+            data = sorted(data, key=lambda r: _xl_sort_key(r.get(sort_field)), reverse=(sort_direction.lower() == "desc"))
         rows = data[offset:offset + limit]
         if fields:
             selected = [f.strip() for f in fields.split(",") if f.strip()]
@@ -110,6 +121,118 @@ def search_{{ table.name }}(query: str, limit: int = {{ default_limit }}) -> lis
 {% endif %}
 
 {% if 'read' in tbl_ops %}
+@mcp.tool()
+def filter_{{ table.name }}(field: str, value: str, operator: str = "eq", limit: int = {{ default_limit }}) -> list[dict]:
+    """Filter rows of the '{{ table.description }}' sheet by a column comparison.
+
+    Args:
+        field: Column name to filter on.
+        value: Value to compare against.
+        operator: 'eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'contains' (default: 'eq').
+        limit: Maximum results.
+    """
+    _valid = { {% for col in table.columns %}"{{ col.name }}", {% endfor %} }
+    if field not in _valid:
+        raise ValueError(f"Invalid field: {field}. Available: {', '.join(sorted(_valid))}")
+    try:
+        limit = min(limit, {{ max_limit }})
+
+        def _cmp(row_val):
+            if row_val is None:
+                return False
+            if operator == "contains":
+                return str(value).lower() in str(row_val).lower()
+            try:
+                a, b = float(row_val), float(value)
+            except (TypeError, ValueError):
+                a, b = str(row_val), str(value)
+            return {
+                "eq": a == b, "ne": a != b, "gt": a > b,
+                "gte": a >= b, "lt": a < b, "lte": a <= b,
+            }.get(operator, a == b)
+
+        results = []
+        for row in _EXCEL_DATA.get("{{ table.name }}", []):
+            if _cmp(row.get(field)):
+                results.append(row)
+                if len(results) >= limit:
+                    break
+        return results
+    except Exception as e:
+        raise RuntimeError(f"filter_{{ table.name }} failed: {e}") from e
+
+@mcp.tool()
+def aggregate_{{ table.name }}(group_by: str, agg_function: str = "count", agg_column: str | None = None, limit: int = 20) -> list[dict]:
+    """Aggregate rows of the '{{ table.description }}' sheet grouped by a column.
+
+    Args:
+        group_by: Column to group by.
+        agg_function: 'count', 'sum', 'avg', 'min', or 'max'.
+        agg_column: Column to aggregate (required for sum/avg/min/max).
+        limit: Maximum groups to return.
+    """
+    _valid = { {% for col in table.columns %}"{{ col.name }}", {% endfor %} }
+    if group_by not in _valid:
+        raise ValueError(f"Invalid group_by: {group_by}. Available: {', '.join(sorted(_valid))}")
+    agg_function = agg_function.lower()
+    if agg_function not in ("count", "sum", "avg", "min", "max"):
+        raise ValueError(f"Invalid agg_function: {agg_function}. Use: count, sum, avg, min, max")
+    if agg_function != "count" and not agg_column:
+        raise ValueError(f"agg_column is required for {agg_function}")
+    try:
+        groups: dict = {}
+        for row in _EXCEL_DATA.get("{{ table.name }}", []):
+            key = row.get(group_by)
+            if agg_function == "count":
+                groups[key] = groups.get(key, 0) + 1
+            else:
+                try:
+                    num = float(row.get(agg_column))
+                except (TypeError, ValueError):
+                    continue
+                groups.setdefault(key, []).append(num)
+
+        results = []
+        for key, val in groups.items():
+            if agg_function == "count":
+                value = val
+            elif agg_function == "sum":
+                value = sum(val)
+            elif agg_function == "avg":
+                value = sum(val) / len(val) if val else None
+            elif agg_function == "min":
+                value = min(val) if val else None
+            else:
+                value = max(val) if val else None
+            results.append({"group": key, "value": value})
+        results.sort(key=lambda r: (r["value"] is None, r["value"]), reverse=True)
+        return results[:min(limit, 100)]
+    except Exception as e:
+        raise RuntimeError(f"aggregate_{{ table.name }} failed: {e}") from e
+
+@mcp.tool()
+def distinct_{{ table.name }}(field: str, limit: int = 100) -> list:
+    """Get the distinct values of a column in the '{{ table.description }}' sheet.
+
+    Args:
+        field: Column name.
+        limit: Maximum distinct values to return.
+    """
+    _valid = { {% for col in table.columns %}"{{ col.name }}", {% endfor %} }
+    if field not in _valid:
+        raise ValueError(f"Invalid field: {field}. Available: {', '.join(sorted(_valid))}")
+    try:
+        seen = []
+        for row in _EXCEL_DATA.get("{{ table.name }}", []):
+            v = row.get(field)
+            if v not in seen:
+                seen.append(v)
+                if len(seen) >= limit:
+                    break
+        return seen
+    except Exception as e:
+        raise RuntimeError(f"distinct_{{ table.name }} failed: {e}") from e
+
 @mcp.tool()
 def count_{{ table.name }}() -> int:
     """Get the total number of rows in the '{{ table.description }}' sheet."""

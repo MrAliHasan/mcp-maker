@@ -71,19 +71,54 @@ def get_{{ table.name }}_by_{{ pk.name }}({{ pk.name }}: {{ 'int' if pk.type.val
 
 @mcp.tool()
 def search_{{ table.name }}(query: str, limit: int = {{ default_limit }}) -> list[dict]:
-    """Search the '{{ table.name }}' table using text matching (ILIKE)."""
+    """Search the '{{ table.name }}' table using text matching (ILIKE).
+
+    Matches if ANY text column contains the query (case-insensitive).
+    """
     try:
         limit = min(limit, {{ max_limit }})
         q = _supabase.table("{{ table.name }}").select("*")
-        {% for col in table.searchable_columns %}
-        {% if col.type.value == 'string' %}
-        q = q.or_("{{ col.name }}.ilike.%{query}%".replace("{query}", query))
-        {% endif %}
-        {% endfor %}
+        # A single or_() call — chaining multiple or_() calls would AND them
+        _clauses = ",".join([
+            {% for col in table.searchable_columns %}
+            {% if col.type.value == 'string' %}
+            f"{{ col.name }}.ilike.%{query}%",
+            {% endif %}
+            {% endfor %}
+        ])
+        if _clauses:
+            q = q.or_(_clauses)
         result = q.limit(limit).execute()
         return result.data
     except Exception as e:
         raise RuntimeError(f"search_{{ table.name }} failed: {e}") from e
+
+@mcp.tool()
+def distinct_{{ table.name }}(field: str, limit: int = 100) -> list:
+    """Get the distinct values of a column in '{{ table.name }}'.
+
+    Args:
+        field: Column name.
+        limit: Maximum distinct values to return.
+
+    Note: computed from up to 1,000 fetched rows — an approximation on
+    larger tables.
+    """
+    _valid_cols = { {% for col in table.columns %}"{{ col.name }}", {% endfor %} }
+    if field not in _valid_cols:
+        raise ValueError(f"Invalid field: {field}. Available: {', '.join(sorted(_valid_cols))}")
+    try:
+        result = _supabase.table("{{ table.name }}").select(field).limit(1000).execute()
+        seen = []
+        for row in result.data:
+            v = row.get(field)
+            if v not in seen:
+                seen.append(v)
+                if len(seen) >= limit:
+                    break
+        return seen
+    except Exception as e:
+        raise RuntimeError(f"distinct_{{ table.name }} failed: {e}") from e
 
 @mcp.tool()
 def filter_{{ table.name }}(field: str, value: str, operator: str = "eq", limit: int = {{ default_limit }}) -> list[dict]:

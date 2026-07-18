@@ -29,7 +29,8 @@ def chat(
         envvar="OPENAI_API_KEY",
         help=(
             "API key for the LLM provider. "
-            "Env vars: OPENAI_API_KEY or OPENROUTER_API_KEY"
+            "Env vars: OPENAI_API_KEY, OPENROUTER_API_KEY, "
+            "XAI_API_KEY, DEEPSEEK_API_KEY"
         ),
     ),
     model: str = typer.Option(
@@ -39,6 +40,8 @@ def chat(
         help=(
             "LLM model to use. "
             "OpenAI: gpt-4o-mini, gpt-4o. "
+            "Grok: grok-3-mini, grok-4. "
+            "DeepSeek: deepseek-chat, deepseek-reasoner. "
             "OpenRouter: anthropic/claude-sonnet-4, "
             "google/gemini-2.5-flash, deepseek/deepseek-chat, "
             "meta-llama/llama-3-70b-instruct"
@@ -48,7 +51,7 @@ def chat(
         None,
         "--provider",
         "-p",
-        help="LLM provider: openai or openrouter (auto-detected from key)",
+        help="LLM provider: openai, openrouter, grok, or deepseek (auto-detected from key)",
     ),
     tables: str = typer.Option(
         None,
@@ -62,29 +65,58 @@ def chat(
     Connect to any data source and ask questions — the AI will query
     your database and return answers.
 
-    Supports OpenAI and OpenRouter (500+ models including Claude,
-    Gemini, Llama, DeepSeek, Mixtral, and more).
+    Supports OpenAI, Grok (xAI), DeepSeek, and OpenRouter (500+ models
+    including Claude, Gemini, Llama, Mixtral, and more).
 
     Examples:
         mcp-maker chat sqlite:///data.db --api-key sk-xxx
+        mcp-maker chat sqlite:///data.db --api-key xai-xxx
+        mcp-maker chat sqlite:///data.db --provider deepseek --api-key sk-xxx
         mcp-maker chat sqlite:///data.db --api-key sk-or-xxx -m anthropic/claude-sonnet-4
     """
     from mcp_maker import __version__
 
-    # Resolve API key — check OpenRouter env var as fallback
+    # Resolve API key — check provider-specific env vars as fallback.
+    # The env var a key came from decides the provider (DeepSeek keys share
+    # OpenAI's "sk-" prefix, so the prefix alone can't distinguish them).
     if not api_key:
-        api_key = os.environ.get("OPENROUTER_API_KEY")
+        for env_var, env_provider in (
+            ("OPENROUTER_API_KEY", "openrouter"),
+            ("XAI_API_KEY", "grok"),
+            ("GROK_API_KEY", "grok"),
+            ("DEEPSEEK_API_KEY", "deepseek"),
+        ):
+            env_key = os.environ.get(env_var)
+            if env_key:
+                api_key = env_key
+                if not provider:
+                    provider = env_provider
+                break
 
     if not api_key:
         console.print(
             "[red]Error:[/red] No API key provided. "
-            "Use --api-key or set OPENAI_API_KEY / OPENROUTER_API_KEY."
+            "Use --api-key or set OPENAI_API_KEY / OPENROUTER_API_KEY / "
+            "XAI_API_KEY / DEEPSEEK_API_KEY."
         )
         raise typer.Exit(1)
 
     # Auto-detect provider from key prefix
     if not provider:
-        provider = "openrouter" if api_key.startswith("sk-or-") else "openai"
+        if api_key.startswith("sk-or-"):
+            provider = "openrouter"
+        elif api_key.startswith("xai-"):
+            provider = "grok"
+        else:
+            provider = "openai"
+
+    provider = provider.lower()
+    if provider not in ("openai", "openrouter", "grok", "deepseek"):
+        console.print(
+            f"[red]Error:[/red] Unknown provider: {provider}. "
+            "Use: openai, openrouter, grok, or deepseek."
+        )
+        raise typer.Exit(1)
 
     # Resolve base_url and default model
     base_url = None
@@ -93,6 +125,16 @@ def chat(
         if not model:
             model = "openai/gpt-4o-mini"
         provider_label = f"OpenRouter ({model})"
+    elif provider == "grok":
+        base_url = "https://api.x.ai/v1"
+        if not model:
+            model = "grok-3-mini"
+        provider_label = f"Grok ({model})"
+    elif provider == "deepseek":
+        base_url = "https://api.deepseek.com/v1"
+        if not model:
+            model = "deepseek-chat"
+        provider_label = f"DeepSeek ({model})"
     else:
         if not model:
             model = "gpt-4o-mini"

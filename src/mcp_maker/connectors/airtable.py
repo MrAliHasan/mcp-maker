@@ -167,12 +167,18 @@ class AirtableConnector(BaseConnector):
                     })
             table_views_map[safe_name] = views
 
-            # Discover fields
+            # Discover fields (de-duplicating names that collide after sanitization)
             columns = []
             field_opts = {}
+            used_names: dict[str, int] = {}
             for field in tbl.fields:
                 field_type = AIRTABLE_TYPE_MAP.get(field.type, ColumnType.STRING)
                 safe_field = _sanitize_name(field.name)
+                if safe_field in used_names:
+                    used_names[safe_field] += 1
+                    safe_field = f"{safe_field}_{used_names[safe_field]}"
+                else:
+                    used_names[safe_field] = 1
 
                 # Extract select options if available
                 if field.type in ("singleSelect", "multipleSelects"):
@@ -192,11 +198,13 @@ class AirtableConnector(BaseConnector):
                 ))
             field_options_map[safe_name] = field_opts
 
-            # Get row count
+            # Get row count — capped so huge bases don't burn API quota.
+            # Up to 1,000 records are fetched (id-only); beyond that the
+            # count is reported as unknown rather than paginating the base.
             try:
                 airtable_table = base.table(original_name)
-                records = airtable_table.all(fields=[])
-                row_count = len(records)
+                records = airtable_table.all(fields=[], max_records=1001)
+                row_count = len(records) if len(records) <= 1000 else None
             except Exception:
                 row_count = None
 

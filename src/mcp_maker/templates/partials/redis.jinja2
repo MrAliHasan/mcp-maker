@@ -1,17 +1,12 @@
 # ─── Redis Data Source ───
 
 import redis as _redis_lib
-from urllib.parse import urlparse as _urlparse
 
-_parsed = _urlparse(DATABASE_URL)
-_redis = _redis_lib.Redis(
-    host=_parsed.hostname or "localhost",
-    port=_parsed.port or 6379,
-    db=int(_parsed.path.lstrip("/") or 0),
-    password=_parsed.password or None,
-    ssl=DATABASE_URL.startswith("rediss://"),
-    decode_responses=True,
-)
+# from_url preserves username (ACL), password, db number, and TLS
+_redis_url = DATABASE_URL
+if not _redis_url.startswith(("redis://", "rediss://")):
+    _redis_url = f"redis://{_redis_url}"
+_redis = _redis_lib.from_url(_redis_url, decode_responses=True)
 
 {% for table in tables %}
 {% set tbl_ops = rbac_config.get(table.name | lower, ops) if rbac_config else ops %}
@@ -343,6 +338,76 @@ def redis_info() -> dict:
         "db_size": _redis.dbsize(),
         "keyspace": {k: str(v) for k, v in info.items()},
     }
+
+@mcp.tool()
+def key_info(key: str) -> dict:
+    """Get metadata about any key: its type, TTL, and memory usage.
+
+    Args:
+        key: The key name to inspect.
+    """
+    try:
+        if not _redis.exists(key):
+            return {"key": key, "exists": False}
+        ttl = _redis.ttl(key)
+        result = {
+            "key": key,
+            "exists": True,
+            "type": _redis.type(key),
+            "ttl_seconds": ttl if ttl >= 0 else None,
+            "persistent": ttl == -1,
+        }
+        try:
+            result["memory_bytes"] = _redis.memory_usage(key)
+        except Exception:
+            pass  # MEMORY USAGE not available on all servers
+        return result
+    except Exception as e:
+        raise RuntimeError(f"key_info failed: {e}") from e
+
+@mcp.tool()
+def scan_keys(pattern: str = "*", limit: int = 100) -> list[dict]:
+    """Scan keys matching a glob pattern, with their types.
+
+    Args:
+        pattern: Glob pattern (e.g. 'user:*', '*session*').
+        limit: Maximum keys to return.
+    """
+    try:
+        results = []
+        cursor = 0
+        while len(results) < limit:
+            cursor, batch = _redis.scan(cursor=cursor, match=pattern, count=100)
+            for k in batch:
+                results.append({"key": k, "type": _redis.type(k)})
+                if len(results) >= limit:
+                    break
+            if cursor == 0:
+                break
+        return results
+    except Exception as e:
+        raise RuntimeError(f"scan_keys failed: {e}") from e
+
+{% if 'update' in ops or 'insert' in ops %}
+@mcp.tool()
+def set_expiry(key: str, seconds: int) -> dict:
+    """Set a time-to-live on a key (or remove it with seconds=0).
+
+    Args:
+        key: The key name.
+        seconds: TTL in seconds; 0 makes the key persistent.
+    """
+    try:
+        if not _redis.exists(key):
+            return {"key": key, "exists": False}
+        if seconds <= 0:
+            _redis.persist(key)
+            return {"key": key, "persistent": True}
+        _redis.expire(key, seconds)
+        return {"key": key, "ttl_seconds": seconds}
+    except Exception as e:
+        raise RuntimeError(f"set_expiry failed: {e}") from e
+{% endif %}
 
 # ─── Pub/Sub Tools ───
 

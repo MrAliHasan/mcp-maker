@@ -45,6 +45,12 @@ Find these in your Supabase dashboard: **Settings → API**.
 
 ## What Gets Generated
 
+### New in 0.2.7
+
+- `distinct_{table}(field, limit)` — distinct values of a column (sampled from up to 1,000 rows)
+- Fixed: `search_{table}` now matches when ANY text column contains the query (it previously required every column to match)
+- `validate` now genuinely checks your URL and API key instead of always passing
+
 ### Per-Table Tools
 
 For each table in your Supabase database:

@@ -20,6 +20,7 @@ from ..core.schema import (
     Table,
 )
 from .base import BaseConnector, register_connector
+from .utils import sanitize_name as _sanitize_name
 
 HUBSPOT_TYPE_MAP = {
     "string": ColumnType.STRING,
@@ -128,6 +129,7 @@ class HubSpotConnector(BaseConnector):
 
         # The mapping of internal name to its options/metadata for Jinja
         select_options_map = {}
+        object_type_map = {}  # safe table name -> actual HubSpot object type
 
         for obj_type in objects_to_inspect:
             try:
@@ -173,9 +175,10 @@ class HubSpotConnector(BaseConnector):
                     description=desc,
                 ))
 
-            select_options_map[obj_type] = field_opts
+            select_options_map[_sanitize_name(obj_type)] = field_opts
 
-            # HubSpot object row_count requires a POST to the search endpoint
+            # HubSpot object row_count requires a POST to the search endpoint.
+            # A failed search must report "unknown", not a fake 0.
             try:
                 search_resp = requests.post(
                     f"https://api.hubapi.com/crm/v3/objects/{obj_type}/search",
@@ -183,16 +186,20 @@ class HubSpotConnector(BaseConnector):
                     json={"limit": 1},
                     timeout=10,
                 )
-                search_data = search_resp.json()
-                row_count = search_data.get("total", 0)
+                if search_resp.status_code == 200:
+                    row_count = search_resp.json().get("total")
+                else:
+                    row_count = None
             except Exception:
                 row_count = None
 
+            safe_name = _sanitize_name(obj_type)
+            object_type_map[safe_name] = obj_type
             tables.append(Table(
-                name=obj_type,
+                name=safe_name,
                 columns=columns,
                 row_count=row_count,
-                description=f"HubSpot {obj_type.capitalize()} Object",
+                description=f"HubSpot {obj_type} object",
             ))
 
         return DataSourceSchema(
@@ -201,6 +208,7 @@ class HubSpotConnector(BaseConnector):
             tables=tables,
             metadata={
                 "select_options_map": select_options_map,
+                "object_type_map": object_type_map,
             },
         )
 

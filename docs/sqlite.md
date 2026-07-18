@@ -34,6 +34,13 @@ mcp-maker init ./my_data.db
 
 ## What Gets Generated
 
+### New in 0.2.7
+
+- `distinct_{table}(field, limit)` — distinct values of any column
+- **Views are now discovered** and get read tools (`list_`, `search_`, `count_`, `aggregate_`, `distinct_`)
+- Inspection opens the database **read-only** — it can never lock or mutate your file
+- Table/column names containing quotes are now safely escaped
+
 For each table in your SQLite database, MCP-Maker generates:
 
 ### Read Tools (always generated)

@@ -33,6 +33,13 @@ mongodb+srv://user:pass@cluster.mongodb.net/mydb   # MongoDB Atlas (SRV)
 
 ## What Gets Generated
 
+### New in 0.2.7
+
+- `distinct_{collection}(field, limit)` — distinct values via MongoDB's native `distinct`
+- **`mongodb+srv://` (Atlas) connection strings are now supported**
+- Collection names with special characters are sanitized into valid tool names
+- Type inference no longer locks a field to `unknown` when its first sampled value is null
+
 For each collection, MCP-Maker samples 100 documents to infer the schema, then generates:
 
 ### Read Tools

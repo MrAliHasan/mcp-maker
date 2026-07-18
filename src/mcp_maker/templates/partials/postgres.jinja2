@@ -385,6 +385,34 @@ def aggregate_{{ table.name }}(group_by: str, agg_function: str = "count", agg_c
         _put_connection(conn)
 {% endif %}
 
+{% if 'read' in tbl_ops %}
+@mcp.tool()
+def distinct_{{ table.name }}(field: str, limit: int = 100) -> list:
+    """Get the distinct values of a column in '{{ table.name }}'.
+
+    Args:
+        field: Column name.
+        limit: Maximum distinct values to return (max: 1000).
+    """
+    _valid_cols = { {% for col in table.columns %}"{{ col.name }}", {% endfor %} }
+    if field not in _valid_cols:
+        raise ValueError(f"Invalid field: {field}. Available: {', '.join(sorted(_valid_cols))}")
+    conn = _get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f'SELECT DISTINCT "{field}" FROM "{{ table.name }}" LIMIT %s',
+            (min(limit, 1000),),
+        )
+        rows = [row[0] for row in cursor.fetchall()]
+        cursor.close()
+        return rows
+    except Exception as e:
+        raise RuntimeError(f"distinct_{{ table.name }} failed: {e}") from e
+    finally:
+        _put_connection(conn)
+{% endif %}
+
 {% if ('insert' in tbl_ops or 'update' in tbl_ops or 'delete' in tbl_ops) and table.primary_key_columns %}
 {% set pk = table.primary_key_columns[0] %}
 

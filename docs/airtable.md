@@ -88,6 +88,13 @@ mcp-maker init airtable://appABC123def456 --read-write
 
 ## Generated Tools
 
+### New in 0.2.7
+
+- `distinct_{table}(field, limit)` — distinct values of a field
+- `aggregate_{table}(group_by, agg_function, agg_field)` — count/sum/avg/min/max
+- Fixed: `search_{table}` crashed at runtime (it iterated the wrong data structure)
+- Row counts during `init` are capped at 1,000 records to protect your API quota
+
 For a base with tables `Contacts` and `Projects`, you'll get:
 
 ### Standard Tools (every table)

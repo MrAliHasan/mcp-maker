@@ -32,20 +32,16 @@ class RedisConnector(BaseConnector):
     def source_type(self) -> str:
         return "redis"
 
-    def _parse_uri(self) -> dict:
-        """Parse the Redis URI into connection params."""
-        from urllib.parse import urlparse
+    def _get_url(self) -> str:
+        """Normalize the URI to a redis:// URL.
+
+        Using redis.from_url preserves username (ACL), password, db number,
+        and TLS — the previous manual parse silently dropped the username.
+        """
         uri = self.uri
         if not uri.startswith("redis://") and not uri.startswith("rediss://"):
             uri = f"redis://{uri}"
-        parsed = urlparse(uri)
-        return {
-            "host": parsed.hostname or "localhost",
-            "port": parsed.port or 6379,
-            "db": int(parsed.path.lstrip("/") or 0),
-            "password": parsed.password or None,
-            "ssl": uri.startswith("rediss://"),
-        }
+        return uri
 
     def validate(self) -> bool:
         """Check that the Redis server is accessible."""
@@ -58,8 +54,7 @@ class RedisConnector(BaseConnector):
             )
 
         import redis as redis_lib
-        params = self._parse_uri()
-        client = redis_lib.Redis(**params, socket_connect_timeout=5)
+        client = redis_lib.from_url(self._get_url(), socket_connect_timeout=5)
         try:
             client.ping()
             return True
@@ -76,8 +71,7 @@ class RedisConnector(BaseConnector):
         """
         import redis as redis_lib
 
-        params = self._parse_uri()
-        client = redis_lib.Redis(**params, decode_responses=True)
+        client = redis_lib.from_url(self._get_url(), decode_responses=True)
 
         # Scan all keys and group by prefix + type
         key_groups: dict[str, dict] = {}
@@ -161,6 +155,8 @@ class RedisConnector(BaseConnector):
         db_size = client.dbsize()
         client.close()
 
+        # Note: no connection params in metadata — the URI may contain a
+        # password and metadata can be persisted into generated artifacts.
         return DataSourceSchema(
             source_type="redis",
             source_uri=self.uri,
@@ -168,7 +164,6 @@ class RedisConnector(BaseConnector):
             metadata={
                 "db_size": db_size,
                 "key_groups": len(tables),
-                "connection": params,
             },
         )
 

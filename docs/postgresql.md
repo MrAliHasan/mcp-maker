@@ -58,6 +58,12 @@ mcp-maker init "postgres://user:pass@localhost:5432/mydb?schema=analytics"
 
 ## Generated Tools
 
+### New in 0.2.7
+
+- `distinct_{table}(field, limit)` — distinct values of any column
+- **Views and materialized views are now discovered** and get read tools
+- Fixed: `?schema=myschema` in the URI no longer breaks the connection
+
 Same as SQLite — for each table you get:
 
 ### Read Tools

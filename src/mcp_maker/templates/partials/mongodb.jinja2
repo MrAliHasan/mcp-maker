@@ -12,9 +12,10 @@ _db = _client[_db_name]
 
 {% for table in tables %}
 {% set tbl_ops = rbac_config.get(table.name | lower, ops) if rbac_config else ops %}
+{% set coll = schema.metadata.get('collection_name_map', {}).get(table.name, table.name) %}
 
 # ═══════════════════════════════════════════════════════
-# Collection: {{ table.name }}
+# Collection: {{ coll }} → {{ table.name }}
 # Fields: {{ table.columns | map(attribute='name') | join(', ') }}
 {% if table.row_count is not none %}
 # Documents: ~{{ table.row_count }}
@@ -38,12 +39,12 @@ def list_{{ table.name }}(limit: int = {{ default_limit }}, offset: int = 0, sor
     """
     try:
         limit = min(limit, {{ max_limit }})
-        total = _db["{{ table.name }}"].count_documents({})
+        total = _db["{{ coll }}"].count_documents({})
         projection = None
         if fields:
             projection = {f.strip(): 1 for f in fields.split(",") if f.strip()}
             projection["_id"] = 1
-        cursor = _db["{{ table.name }}"].find({}, projection).skip(offset).limit(limit)
+        cursor = _db["{{ coll }}"].find({}, projection).skip(offset).limit(limit)
         if sort_field:
             direction = -1 if sort_direction.lower() == "desc" else 1
             cursor = cursor.sort(sort_field, direction)
@@ -65,9 +66,9 @@ def get_{{ table.name }}_by_id(id: str) -> dict | None:
     """Get a single document from '{{ table.name }}' by its _id."""
     try:
         try:
-            doc = _db["{{ table.name }}"].find_one({"_id": ObjectId(id)})
+            doc = _db["{{ coll }}"].find_one({"_id": ObjectId(id)})
         except Exception:
-            doc = _db["{{ table.name }}"].find_one({"_id": id})
+            doc = _db["{{ coll }}"].find_one({"_id": id})
         if doc:
             doc["_id"] = str(doc["_id"])
         return doc
@@ -87,7 +88,7 @@ def search_{{ table.name }}(query: str, limit: int = {{ default_limit }}) -> lis
         {% endfor %}
         if not conditions:
             return []
-        cursor = _db["{{ table.name }}"].find({"$or": conditions}).limit(limit)
+        cursor = _db["{{ coll }}"].find({"$or": conditions}).limit(limit)
         results = []
         for doc in cursor:
             doc["_id"] = str(doc["_id"])
@@ -114,7 +115,7 @@ def filter_{{ table.name }}(field: str, value: str, operator: str = "eq", limit:
             query = {field: {"$regex": value, "$options": "i"}}
         else:
             query = {field: {mongo_op: value}}
-        cursor = _db["{{ table.name }}"].find(query).limit(limit)
+        cursor = _db["{{ coll }}"].find(query).limit(limit)
         results = []
         for doc in cursor:
             doc["_id"] = str(doc["_id"])
@@ -149,15 +150,29 @@ def aggregate_{{ table.name }}(group_by: str, agg_function: str = "count", agg_f
             {"$limit": min(limit, 100)},
             {"$project": {"group": "$_id", "value": 1, "_id": 0}},
         ]
-        return list(_db["{{ table.name }}"].aggregate(pipeline))
+        return list(_db["{{ coll }}"].aggregate(pipeline))
     except Exception as e:
         raise RuntimeError(f"aggregate_{{ table.name }} failed: {e}") from e
+
+@mcp.tool()
+def distinct_{{ table.name }}(field: str, limit: int = 100) -> list:
+    """Get the distinct values of a field in '{{ table.name }}'.
+
+    Args:
+        field: Field name to get distinct values for.
+        limit: Maximum distinct values to return.
+    """
+    try:
+        values = _db["{{ coll }}"].distinct(field)
+        return [str(v) if isinstance(v, ObjectId) else v for v in values[:min(limit, 1000)]]
+    except Exception as e:
+        raise RuntimeError(f"distinct_{{ table.name }} failed: {e}") from e
 
 @mcp.tool()
 def count_{{ table.name }}() -> int:
     """Get the estimated number of documents in '{{ table.name }}'."""
     try:
-        return _db["{{ table.name }}"].estimated_document_count()
+        return _db["{{ coll }}"].estimated_document_count()
     except Exception as e:
         raise RuntimeError(f"count_{{ table.name }} failed: {e}") from e
 
@@ -177,7 +192,7 @@ def insert_{{ table.name }}(data: dict) -> dict:
     """Insert a new document into '{{ table.name }}'."""
     try:
         data.pop("_id", None)
-        result = _db["{{ table.name }}"].insert_one(data)
+        result = _db["{{ coll }}"].insert_one(data)
         return {"inserted_id": str(result.inserted_id)}
     except Exception as e:
         raise RuntimeError(f"insert_{{ table.name }} failed: {e}") from e
@@ -193,7 +208,7 @@ def update_{{ table.name }}_by_id(id: str, data: dict) -> dict:
             oid = ObjectId(id)
         except Exception:
             oid = id
-        result = _db["{{ table.name }}"].update_one({"_id": oid}, {"$set": data})
+        result = _db["{{ coll }}"].update_one({"_id": oid}, {"$set": data})
         return {"matched": result.matched_count, "modified": result.modified_count}
     except Exception as e:
         raise RuntimeError(f"update_{{ table.name }}_by_id failed: {e}") from e
@@ -208,7 +223,7 @@ def delete_{{ table.name }}_by_id(id: str) -> dict:
             oid = ObjectId(id)
         except Exception:
             oid = id
-        result = _db["{{ table.name }}"].delete_one({"_id": oid})
+        result = _db["{{ coll }}"].delete_one({"_id": oid})
         return {"deleted": result.deleted_count}
     except Exception as e:
         raise RuntimeError(f"delete_{{ table.name }}_by_id failed: {e}") from e
@@ -225,7 +240,7 @@ def batch_insert_{{ table.name }}(records: list[dict]) -> dict:
     try:
         for r in records:
             r.pop("_id", None)
-        result = _db["{{ table.name }}"].insert_many(records)
+        result = _db["{{ coll }}"].insert_many(records)
         return {"inserted": len(result.inserted_ids)}
     except Exception as e:
         raise RuntimeError(f"batch_insert_{{ table.name }} failed: {e}") from e
@@ -246,7 +261,7 @@ def batch_delete_{{ table.name }}(ids: list[str]) -> dict:
                 oids.append(ObjectId(id_val))
             except Exception:
                 oids.append(id_val)
-        result = _db["{{ table.name }}"].delete_many({"_id": {"$in": oids}})
+        result = _db["{{ coll }}"].delete_many({"_id": {"$in": oids}})
         return {"deleted": result.deleted_count}
     except Exception as e:
         raise RuntimeError(f"batch_delete_{{ table.name }} failed: {e}") from e

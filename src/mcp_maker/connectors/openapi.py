@@ -41,6 +41,28 @@ def _sanitize_operation_id(method: str, path: str) -> str:
     return f"{method}_{clean_path}"
 
 
+def _resolve_ref(node, spec: dict, _depth: int = 0):
+    """Resolve local $ref pointers ('#/components/…', '#/definitions/…').
+
+    Returns the node with any top-level $ref replaced by its target.
+    Nested refs inside the returned object are resolved lazily by callers
+    that pass their sub-schemas back through this function.
+    """
+    while isinstance(node, dict) and "$ref" in node and _depth < 20:
+        ref = node["$ref"]
+        if not isinstance(ref, str) or not ref.startswith("#/"):
+            break  # external/remote refs are not supported
+        target = spec
+        for part in ref[2:].split("/"):
+            part = part.replace("~1", "/").replace("~0", "~")
+            if not isinstance(target, dict) or part not in target:
+                return node  # dangling ref — return as-is
+            target = target[part]
+        node = target
+        _depth += 1
+    return node
+
+
 class OpenAPIConnector(BaseConnector):
     """Connector for OpenAPI/Swagger specs.
 
@@ -75,12 +97,17 @@ class OpenAPIConnector(BaseConnector):
         # Check if it's a URL
         if spec_path.startswith("http://") or spec_path.startswith("https://"):
             import httpx
-            resp = httpx.get(spec_path)
+            resp = httpx.get(spec_path, timeout=30, follow_redirects=True)
             resp.raise_for_status()
             if spec_path.endswith(".yaml") or spec_path.endswith(".yml"):
                 import yaml
                 return yaml.safe_load(resp.text)
-            return resp.json()
+            try:
+                return resp.json()
+            except ValueError:
+                # Some servers serve YAML without a .yaml extension
+                import yaml
+                return yaml.safe_load(resp.text)
 
         # Local file
         spec_path = os.path.expanduser(spec_path)
@@ -128,15 +155,23 @@ class OpenAPIConnector(BaseConnector):
             base_url = f"{scheme}://{spec['host']}{spec.get('basePath', '')}"
 
         tables = []
+        used_names: dict[str, int] = {}
 
         for path, methods in sorted(paths.items()):
+            if not isinstance(methods, dict):
+                continue
+            # Path-level parameters are shared by every operation on the path
+            shared_params = [
+                _resolve_ref(p, spec) for p in methods.get("parameters", [])
+            ]
+
             for method, endpoint in sorted(methods.items()):
                 if method.lower() not in ("get", "post", "put", "patch", "delete"):
                     continue
+                endpoint = _resolve_ref(endpoint, spec)
 
                 operation_id = endpoint.get("operationId", _sanitize_operation_id(method, path))
                 summary = endpoint.get("summary", f"{method.upper()} {path}")
-                endpoint.get("description", summary)
 
                 columns = []
 
@@ -154,10 +189,19 @@ class OpenAPIConnector(BaseConnector):
                     description=path,
                 ))
 
-                # Parse parameters (path + query)
-                params = endpoint.get("parameters", [])
+                # Parse parameters (path-level + operation-level)
+                params = shared_params + [
+                    _resolve_ref(p, spec) for p in endpoint.get("parameters", [])
+                ]
+                body_schema = None
                 for param in params:
-                    param_schema = param.get("schema", param)
+                    if not isinstance(param, dict) or "name" not in param:
+                        continue
+                    # Swagger 2.x body params carry a schema instead of a type
+                    if param.get("in") == "body":
+                        body_schema = _resolve_ref(param.get("schema", {}), spec)
+                        continue
+                    param_schema = _resolve_ref(param.get("schema", param), spec)
                     columns.append(Column(
                         name=param["name"],
                         type=_openapi_type_to_column_type(param_schema),
@@ -165,14 +209,19 @@ class OpenAPIConnector(BaseConnector):
                         description=f"{param.get('in', 'query')} param",
                     ))
 
-                # Parse request body (OpenAPI 3.x)
-                request_body = endpoint.get("requestBody", {})
+                # Parse request body (OpenAPI 3.x), falling back to the
+                # Swagger 2.x body param schema captured above
+                request_body = _resolve_ref(endpoint.get("requestBody", {}), spec)
                 if request_body:
                     content = request_body.get("content", {})
-                    json_schema = content.get("application/json", {}).get("schema", {})
-                    properties = json_schema.get("properties", {})
-                    required = set(json_schema.get("required", []))
+                    body_schema = _resolve_ref(
+                        content.get("application/json", {}).get("schema", {}), spec
+                    )
+                if body_schema:
+                    properties = body_schema.get("properties", {})
+                    required = set(body_schema.get("required", []))
                     for prop_name, prop_schema in sorted(properties.items()):
+                        prop_schema = _resolve_ref(prop_schema, spec)
                         columns.append(Column(
                             name=prop_name,
                             type=_openapi_type_to_column_type(prop_schema),
@@ -181,6 +230,12 @@ class OpenAPIConnector(BaseConnector):
                         ))
 
                 safe_name = operation_id.replace("-", "_").replace(".", "_").lower()
+                # De-duplicate colliding operation IDs
+                if safe_name in used_names:
+                    used_names[safe_name] += 1
+                    safe_name = f"{safe_name}_{used_names[safe_name]}"
+                else:
+                    used_names[safe_name] = 1
 
                 tables.append(Table(
                     name=safe_name,

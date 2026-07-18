@@ -40,7 +40,7 @@ class TestMySQLInspect:
         mock_cursor = MagicMock()
 
         # Sequence of fetchall calls: tables, columns, row_count, fk
-        tables_result = [{"TABLE_NAME": "users", "TABLE_COMMENT": "user table"}]
+        tables_result = [{"TABLE_NAME": "users", "TABLE_COMMENT": "user table", "TABLE_TYPE": "BASE TABLE"}]
         columns_result = [
             {"COLUMN_NAME": "id", "DATA_TYPE": "int", "IS_NULLABLE": "NO", "COLUMN_KEY": "PRI", "COLUMN_DEFAULT": None, "COLUMN_COMMENT": "id col"},
             {"COLUMN_NAME": "name", "DATA_TYPE": "varchar", "IS_NULLABLE": "YES", "COLUMN_KEY": "", "COLUMN_DEFAULT": None, "COLUMN_COMMENT": None},
@@ -106,8 +106,9 @@ class TestPostgresInspect:
 
         mock_cursor = MagicMock()
 
-        # Sequence of fetchall calls: tables, table_comments, col_comments, pks, columns, fks
-        tables_result = [{"table_name": "users"}]
+        # Sequence of fetchall calls: tables, matviews, table_comments, col_comments, pks, columns, fks
+        tables_result = [{"table_name": "users", "table_type": "BASE TABLE"}]
+        matviews_result = []
         table_comments_result = [{"table_name": "users", "table_comment": "user table"}]
         col_comments_result = [{"table_name": "users", "column_name": "id", "column_comment": "id col"}]
         pk_result = [{"table_name": "users", "column_name": "id"}]
@@ -119,7 +120,7 @@ class TestPostgresInspect:
 
         call_count = [0]
         def mock_fetchall():
-            results = [tables_result, table_comments_result, col_comments_result, pk_result, columns_result, fk_result]
+            results = [tables_result, matviews_result, table_comments_result, col_comments_result, pk_result, columns_result, fk_result]
             idx = call_count[0]
             call_count[0] += 1
             if idx < len(results):

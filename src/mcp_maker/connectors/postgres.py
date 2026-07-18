@@ -29,21 +29,37 @@ class PostgresConnector(BaseConnector):
         return "postgres"
 
     def _get_dsn(self) -> str:
-        """Return a psycopg2-compatible DSN from the URI."""
+        """Return a psycopg2-compatible DSN from the URI.
+
+        Strips the mcp-maker-specific ?schema= parameter, which libpq
+        would otherwise reject as an unknown connection option.
+        """
         uri = self.uri
         # Normalize scheme for psycopg2
         if uri.startswith("postgres://"):
             uri = "postgresql://" + uri[len("postgres://"):]
+        parsed = urlparse(uri)
+        if parsed.query:
+            kept = [
+                p for p in parsed.query.split("&")
+                if not p.lower().startswith("schema=")
+            ]
+            uri = uri.split("?")[0] + (("?" + "&".join(kept)) if kept else "")
         return uri
 
     def _parse_schema(self) -> str:
         """Extract the schema name from the URI query string, default 'public'."""
-        parsed = urlparse(self._get_dsn())
+        parsed = urlparse(self.uri)
         # Check for ?schema=xxx in query params
         if parsed.query:
             params = dict(p.split("=", 1) for p in parsed.query.split("&") if "=" in p)
             return params.get("schema", "public")
         return "public"
+
+    @staticmethod
+    def _quote_ident(name: str) -> str:
+        """Safely quote a PostgreSQL identifier (escapes embedded double quotes)."""
+        return '"' + name.replace('"', '""') + '"'
 
     def validate(self) -> bool:
         """Check that the PostgreSQL database is accessible."""
@@ -77,18 +93,27 @@ class PostgresConnector(BaseConnector):
 
         tables = []
 
-        # Get all tables in the schema
+        # Get all tables and views in the schema
         cursor.execute(
             """
-            SELECT table_name
+            SELECT table_name, table_type
             FROM information_schema.tables
             WHERE table_schema = %s
-              AND table_type = 'BASE TABLE'
+              AND table_type IN ('BASE TABLE', 'VIEW')
             ORDER BY table_name
             """,
             (schema_name,),
         )
-        table_names = [row["table_name"] for row in cursor.fetchall()]
+        rows = cursor.fetchall()
+        table_names = [r["table_name"] for r in rows if r["table_type"] == "BASE TABLE"]
+        view_names = [r["table_name"] for r in rows if r["table_type"] == "VIEW"]
+
+        # Materialized views (not in information_schema.tables)
+        cursor.execute(
+            "SELECT matviewname FROM pg_matviews WHERE schemaname = %s ORDER BY matviewname",
+            (schema_name,),
+        )
+        view_names += [r["matviewname"] for r in cursor.fetchall()]
 
         # Get table comments
         cursor.execute(
@@ -137,7 +162,8 @@ class PostgresConnector(BaseConnector):
         for row in cursor.fetchall():
             pk_map.setdefault(row["table_name"], set()).add(row["column_name"])
 
-        for table_name in table_names:
+        for table_name in table_names + view_names:
+            is_view = table_name in view_names
             # Get columns
             cursor.execute(
                 """
@@ -153,11 +179,32 @@ class PostgresConnector(BaseConnector):
                 """,
                 (schema_name, table_name),
             )
+            col_rows = cursor.fetchall()
+
+            # Materialized views aren't in information_schema.columns — use pg_attribute
+            if not col_rows:
+                cursor.execute(
+                    """
+                    SELECT
+                        a.attname AS column_name,
+                        format_type(a.atttypid, a.atttypmod) AS data_type,
+                        CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END AS is_nullable,
+                        NULL AS column_default
+                    FROM pg_attribute a
+                    JOIN pg_class c ON c.oid = a.attrelid
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE n.nspname = %s AND c.relname = %s
+                      AND a.attnum > 0 AND NOT a.attisdropped
+                    ORDER BY a.attnum
+                    """,
+                    (schema_name, table_name),
+                )
+                col_rows = cursor.fetchall()
 
             pk_columns = pk_map.get(table_name, set())
             tb_col_comments = col_comments.get(table_name, {})
             columns = []
-            for col in cursor.fetchall():
+            for col in col_rows:
                 columns.append(Column(
                     name=col["column_name"],
                     type=map_sql_type(col["data_type"]),
@@ -169,18 +216,23 @@ class PostgresConnector(BaseConnector):
             # Get row count
             try:
                 cursor.execute(
-                    f'SELECT COUNT(*) as cnt FROM "{schema_name}"."{table_name}"'
+                    f"SELECT COUNT(*) as cnt FROM "
+                    f"{self._quote_ident(schema_name)}.{self._quote_ident(table_name)}"
                 )
                 row_count = cursor.fetchone()["cnt"]
             except Exception:
                 row_count = None
                 conn.rollback()
 
+            description = table_comments.get(table_name)
+            if is_view:
+                description = description or "view (read-only)"
+
             tables.append(Table(
                 name=table_name,
                 columns=columns,
                 row_count=row_count,
-                description=table_comments.get(table_name),
+                description=description,
             ))
 
         # Discover foreign key relationships
@@ -232,6 +284,7 @@ class PostgresConnector(BaseConnector):
                 "schema": schema_name,
                 "host": parsed.hostname or "localhost",
                 "port": parsed.port or 5432,
+                "views": view_names,
             },
         )
 

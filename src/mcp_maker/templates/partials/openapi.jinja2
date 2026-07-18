@@ -15,10 +15,24 @@ _http_client = httpx.Client(
     },
 )
 
-# Load API key/token from environment if available
-_API_TOKEN = os.environ.get("API_TOKEN", os.environ.get("API_KEY", ""))
+# Authentication — three supported styles, driven by environment variables:
+#   API_TOKEN=xxx                      → Authorization: Bearer xxx
+#   API_KEY=xxx + API_KEY_HEADER=X-Api-Key  → X-Api-Key: xxx  (custom header)
+#   API_KEY=xxx + API_KEY_QUERY=api_key     → ?api_key=xxx    (query parameter)
+_API_TOKEN = os.environ.get("API_TOKEN", "")
+_API_KEY = os.environ.get("API_KEY", "")
+_API_KEY_HEADER = os.environ.get("API_KEY_HEADER", "")
+_API_KEY_QUERY = os.environ.get("API_KEY_QUERY", "")
+_AUTH_QUERY_PARAMS = {}
+
 if _API_TOKEN:
     _http_client.headers["Authorization"] = f"Bearer {_API_TOKEN}"
+elif _API_KEY and _API_KEY_HEADER:
+    _http_client.headers[_API_KEY_HEADER] = _API_KEY
+elif _API_KEY and _API_KEY_QUERY:
+    _AUTH_QUERY_PARAMS[_API_KEY_QUERY] = _API_KEY
+elif _API_KEY:
+    _http_client.headers["Authorization"] = f"Bearer {_API_KEY}"
 
 {% for table in tables %}
 {% set tbl_ops = rbac_config.get(table.name | lower, ops) if rbac_config else ops %}
@@ -72,6 +86,7 @@ def {{ table.name }}(
     {% endfor %}
     {% endif %}
 
+    params.update(_AUTH_QUERY_PARAMS)
     response = _http_client.request(
         method="{{ method_col.description }}",
         url=path,
@@ -80,11 +95,47 @@ def {{ table.name }}(
         json=body or None,
         {% endif %}
     )
-    response.raise_for_status()
+    if response.status_code >= 400:
+        return {
+            "error": True,
+            "status": response.status_code,
+            "body": response.text[:1000],
+        }
 
     try:
         return response.json()
     except Exception:
-        return {"status": response.status_code, "body": response.text[:500]}
+        return {"status": response.status_code, "body": response.text[:1000]}
 
 {% endfor %}
+
+# ─── Generic Escape Hatch ───
+
+@mcp.tool()
+def call_api(method: str, path: str, query_params: dict | None = None, body: dict | None = None) -> dict:
+    """Call any endpoint of this API directly — useful for endpoints or
+    parameters not covered by the generated tools.
+
+    Args:
+        method: HTTP method ('GET', 'POST', 'PUT', 'PATCH', 'DELETE').
+        path: Endpoint path relative to the base URL (e.g. '/users/42').
+        query_params: Optional query parameters.
+        body: Optional JSON request body.
+    """
+    method = method.upper()
+    if method not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+        raise ValueError(f"Invalid method: {method}")
+    params = dict(query_params or {})
+    params.update(_AUTH_QUERY_PARAMS)
+    response = _http_client.request(
+        method=method,
+        url=path,
+        params=params or None,
+        json=body,
+    )
+    result = {"status": response.status_code}
+    try:
+        result["data"] = response.json()
+    except Exception:
+        result["body"] = response.text[:2000]
+    return result

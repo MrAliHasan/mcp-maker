@@ -49,33 +49,62 @@ _{{ table.name }}_fields = {
 _{{ table.name }}_fields_rev = {v: k for k, v in _{{ table.name }}_fields.items()}
 
 
-def _normalize_{{ table.name }}(record: dict, row_index: int = 0) -> dict:
-    """Convert a Google Sheets row dict to use safe field names."""
-    result = {"row_number": row_index + 2}  # +2 for 1-indexed + header row
-    for safe_name, original_name in _{{ table.name }}_fields.items():
-        result[safe_name] = record.get(original_name)
-    return result
+def _rows_{{ table.name }}() -> list[dict]:
+    """Fetch all rows keyed by safe field names.
 
+    Uses get_all_values (tolerates duplicate/empty headers, unlike
+    get_all_records which raises) and maps columns by header name.
+    """
+    ws = spreadsheet.worksheet(SHEET_NAMES["{{ table.name }}"])
+    values = ws.get_all_values()
+    if not values:
+        return []
+    headers = [h.strip() for h in values[0]]
+    col_index = {}
+    for safe_name, original_name in _{{ table.name }}_fields.items():
+        try:
+            col_index[safe_name] = headers.index(original_name)
+        except ValueError:
+            col_index[safe_name] = None
+    rows = []
+    for i, raw in enumerate(values[1:]):
+        row = {"row_number": i + 2}  # +2 for 1-indexed + header row
+        for safe_name, j in col_index.items():
+            row[safe_name] = raw[j] if (j is not None and j < len(raw)) else None
+        rows.append(row)
+    return rows
+
+
+def _gs_sort_key(value):
+    """Sort mixed data numerically when possible, else as strings."""
+    if value is None or value == "":
+        return (2, "")
+    try:
+        return (0, float(value))
+    except (TypeError, ValueError):
+        return (1, str(value).lower())
 
 
 {% if 'read' in tbl_ops %}
 @mcp.tool()
-def list_{{ table.name }}(limit: int = {{ default_limit }}, offset: int = 0, fields: str | None = None) -> dict:
+def list_{{ table.name }}(limit: int = {{ default_limit }}, offset: int = 0, sort_field: str | None = None, sort_direction: str = "asc", fields: str | None = None) -> dict:
     """List rows from the '{{ table.description }}' Google Sheet.
 
     Args:
         limit: Maximum rows (default: {{ default_limit }}, max: {{ max_limit }}).
         offset: Number of rows to skip.
+        sort_field: Column name to sort by (numeric-aware).
+        sort_direction: 'asc' or 'desc' (default: 'asc').
         fields: Comma-separated column names to return (default: all).
 
     Returns:
         Dict with 'results', 'total', 'has_more', 'next_offset'.
     """
     limit = min(limit, {{ max_limit }})
-    ws = spreadsheet.worksheet(SHEET_NAMES["{{ table.name }}"])
-    records = ws.get_all_records()
-    normalized = [_normalize_{{ table.name }}(r, i) for i, r in enumerate(records)]
+    normalized = _rows_{{ table.name }}()
     total = len(normalized)
+    if sort_field:
+        normalized = sorted(normalized, key=lambda r: _gs_sort_key(r.get(sort_field)), reverse=(sort_direction.lower() == "desc"))
     rows = normalized[offset:offset + limit]
     if fields:
         selected = [f.strip() for f in fields.split(",") if f.strip()]
@@ -99,17 +128,115 @@ def search_{{ table.name }}(query: str, limit: int = {{ default_limit }}) -> lis
         query: Search text (case-insensitive, matches any field).
         limit: Maximum results.
     """
-    all_rows = list_{{ table.name }}(limit=10000)
+    limit = min(limit, {{ max_limit }})
     query_lower = query.lower()
     results = []
-    for row in all_rows:
-        for value in row.values():
-            if value and query_lower in str(value).lower():
-                results.append(row)
+    for row in _rows_{{ table.name }}():
+        if any(v is not None and query_lower in str(v).lower() for k, v in row.items() if k != "row_number"):
+            results.append(row)
+            if len(results) >= limit:
                 break
-        if len(results) >= limit:
-            break
     return results
+
+@mcp.tool()
+def filter_{{ table.name }}(field: str, value: str, operator: str = "eq", limit: int = {{ default_limit }}) -> list[dict]:
+    """Filter rows of '{{ table.description }}' by a column comparison.
+
+    Args:
+        field: Column name to filter on.
+        value: Value to compare against.
+        operator: 'eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'contains' (default: 'eq').
+        limit: Maximum results.
+    """
+    if field not in _{{ table.name }}_fields:
+        raise ValueError(f"Invalid field: {field}. Available: {', '.join(_{{ table.name }}_fields)}")
+    limit = min(limit, {{ max_limit }})
+
+    def _cmp(row_val):
+        if row_val is None or row_val == "":
+            return False
+        if operator == "contains":
+            return str(value).lower() in str(row_val).lower()
+        try:
+            a, b = float(row_val), float(value)
+        except (TypeError, ValueError):
+            a, b = str(row_val), str(value)
+        return {
+            "eq": a == b, "ne": a != b, "gt": a > b,
+            "gte": a >= b, "lt": a < b, "lte": a <= b,
+        }.get(operator, a == b)
+
+    results = []
+    for row in _rows_{{ table.name }}():
+        if _cmp(row.get(field)):
+            results.append(row)
+            if len(results) >= limit:
+                break
+    return results
+
+@mcp.tool()
+def aggregate_{{ table.name }}(group_by: str, agg_function: str = "count", agg_column: str | None = None, limit: int = 20) -> list[dict]:
+    """Aggregate rows of '{{ table.description }}' grouped by a column.
+
+    Args:
+        group_by: Column to group by.
+        agg_function: 'count', 'sum', 'avg', 'min', or 'max'.
+        agg_column: Column to aggregate (required for sum/avg/min/max).
+        limit: Maximum groups to return.
+    """
+    if group_by not in _{{ table.name }}_fields:
+        raise ValueError(f"Invalid group_by: {group_by}. Available: {', '.join(_{{ table.name }}_fields)}")
+    agg_function = agg_function.lower()
+    if agg_function not in ("count", "sum", "avg", "min", "max"):
+        raise ValueError(f"Invalid agg_function: {agg_function}. Use: count, sum, avg, min, max")
+    if agg_function != "count" and not agg_column:
+        raise ValueError(f"agg_column is required for {agg_function}")
+    groups: dict = {}
+    for row in _rows_{{ table.name }}():
+        key = row.get(group_by)
+        if agg_function == "count":
+            groups[key] = groups.get(key, 0) + 1
+        else:
+            try:
+                num = float(row.get(agg_column))
+            except (TypeError, ValueError):
+                continue
+            groups.setdefault(key, []).append(num)
+
+    results = []
+    for key, val in groups.items():
+        if agg_function == "count":
+            value = val
+        elif agg_function == "sum":
+            value = sum(val)
+        elif agg_function == "avg":
+            value = sum(val) / len(val) if val else None
+        elif agg_function == "min":
+            value = min(val) if val else None
+        else:
+            value = max(val) if val else None
+        results.append({"group": key, "value": value})
+    results.sort(key=lambda r: (r["value"] is None, r["value"]), reverse=True)
+    return results[:min(limit, 100)]
+
+@mcp.tool()
+def distinct_{{ table.name }}(field: str, limit: int = 100) -> list:
+    """Get the distinct values of a column in '{{ table.description }}'.
+
+    Args:
+        field: Column name.
+        limit: Maximum distinct values to return.
+    """
+    if field not in _{{ table.name }}_fields:
+        raise ValueError(f"Invalid field: {field}. Available: {', '.join(_{{ table.name }}_fields)}")
+    seen = []
+    for row in _rows_{{ table.name }}():
+        v = row.get(field)
+        if v not in seen:
+            seen.append(v)
+            if len(seen) >= limit:
+                break
+    return seen
 {% endif %}
 
 
@@ -118,9 +245,9 @@ def search_{{ table.name }}(query: str, limit: int = {{ default_limit }}) -> lis
 @mcp.tool()
 def count_{{ table.name }}() -> int:
     """Get the total number of data rows in '{{ table.description }}'."""
-    ws = spreadsheet.worksheet(SHEET_NAMES["{{ table.name }}"])
-    # row_count includes header, subtract 1 for data rows only
-    return max(0, ws.row_count - 1)
+    # Counts actual data rows — ws.row_count is the grid size (often a
+    # default 1000), not the number of populated rows.
+    return len(_rows_{{ table.name }}())
 {% endif %}
 
 

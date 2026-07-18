@@ -56,22 +56,38 @@ class SupabaseConnector(BaseConnector):
         return url, key
 
     def validate(self) -> bool:
-        """Check that the Supabase project is accessible."""
+        """Check that the Supabase project is accessible.
+
+        Hits the PostgREST root endpoint and verifies the response status,
+        so a wrong URL or key fails here instead of during inspect().
+        """
         try:
-            from supabase import create_client  # noqa: F401
+            import httpx
         except ImportError:
             raise ImportError(
-                "supabase-py is required for Supabase support. "
+                "httpx is required for Supabase support. "
                 "Install it with: pip install mcp-maker[supabase]"
             )
 
         url, key = self._get_config()
-        client = create_client(url, key)
-        # Simple health check — query the tables
         try:
-            client.table("_health_check_nonexistent").select("*").limit(0).execute()
-        except Exception:
-            pass  # Expected to fail, but proves connection works
+            resp = httpx.get(
+                f"{url}/rest/v1/",
+                headers={"apikey": key, "Authorization": f"Bearer {key}"},
+                timeout=15,
+            )
+        except Exception as e:
+            raise ConnectionError(f"Cannot reach Supabase at {url}: {e}")
+
+        if resp.status_code in (401, 403):
+            raise ConnectionError(
+                "Supabase rejected the API key (HTTP "
+                f"{resp.status_code}). Check SUPABASE_KEY / SUPABASE_ANON_KEY."
+            )
+        if resp.status_code != 200:
+            raise ConnectionError(
+                f"Supabase REST API returned HTTP {resp.status_code} for {url}."
+            )
         return True
 
     def inspect(self) -> DataSourceSchema:
@@ -87,7 +103,7 @@ class SupabaseConnector(BaseConnector):
         }
 
         # Get table list from PostgREST OpenAPI endpoint
-        resp = httpx.get(f"{url}/rest/v1/", headers=headers)
+        resp = httpx.get(f"{url}/rest/v1/", headers=headers, timeout=30)
         if resp.status_code != 200:
             raise ConnectionError(f"Cannot reach Supabase REST API: {resp.status_code}")
 
@@ -137,6 +153,7 @@ class SupabaseConnector(BaseConnector):
                 count_resp = httpx.get(
                     f"{url}/rest/v1/{table_name}",
                     headers={**headers, "Range": "0-0", "Prefer": "count=exact"},
+                    timeout=15,
                 )
                 content_range = count_resp.headers.get("Content-Range", "")
                 row_count = int(content_range.split("/")[-1]) if "/" in content_range else None

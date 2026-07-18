@@ -32,6 +32,13 @@ redis://host:6379/2                        # Database 2
 
 ## What Gets Generated
 
+### New in 0.2.7
+
+- `key_info(key)` — type, TTL, and memory usage of any key
+- `scan_keys(pattern, limit)` — scan keys by glob pattern with their types
+- `set_expiry(key, seconds)` — set or remove a TTL (write mode)
+- Fixed: usernames in ACL-style URIs (`redis://user:pass@host`) are no longer dropped
+
 MCP-Maker scans keys and generates **type-aware tools** based on the Redis data type:
 
 ### String Keys

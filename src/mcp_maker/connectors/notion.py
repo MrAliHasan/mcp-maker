@@ -282,25 +282,26 @@ class NotionConnector(BaseConnector):
 
             select_options_map[safe_name] = field_opts
 
-            # Get row count via query
+            # Get row count via paginated query, capped at 10 pages (1,000
+            # records) so huge databases don't hammer the API. Beyond the
+            # cap the count is reported as unknown.
             try:
-                client.databases.query(
-                    database_id=db_id,
-                    page_size=1,
-                )
-                # Notion doesn't return total count easily, do a full paginated count
                 row_count = 0
                 has_more = True
                 start_cursor = None
-                while has_more:
+                pages_fetched = 0
+                while has_more and pages_fetched < 10:
                     query_result = client.databases.query(
                         database_id=db_id,
                         page_size=100,
-                        start_cursor=start_cursor,
+                        **({"start_cursor": start_cursor} if start_cursor else {}),
                     )
                     row_count += len(query_result.get("results", []))
                     has_more = query_result.get("has_more", False)
                     start_cursor = query_result.get("next_cursor")
+                    pages_fetched += 1
+                if has_more:
+                    row_count = None
             except Exception:
                 row_count = None
 

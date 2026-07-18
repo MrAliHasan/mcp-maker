@@ -67,6 +67,11 @@ mcp-maker config --install
 
 ## Generated Tools
 
+### New in 0.2.7
+
+- Custom objects with special characters in their names now generate valid tools that call the correct API endpoints
+- Failed record counts report "unknown" instead of a misleading 0
+
 For each CRM object type discovered, MCP-Maker generates:
 
 | Tool | Description |

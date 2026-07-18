@@ -13,37 +13,28 @@ class TestRedisConnector:
         c = RedisConnector("redis://localhost:6379/0")
         assert c.source_type == "redis"
 
-    def test_parse_uri_default(self):
+    def test_get_url_passthrough(self):
         c = RedisConnector("redis://localhost:6379/0")
-        params = c._parse_uri()
-        assert params["host"] == "localhost"
-        assert params["port"] == 6379
-        assert params["db"] == 0
-        assert params["ssl"] is False
+        assert c._get_url() == "redis://localhost:6379/0"
 
-    def test_parse_uri_with_auth(self):
-        c = RedisConnector("redis://:mypassword@redis.example.com:6380/2")
-        params = c._parse_uri()
-        assert params["host"] == "redis.example.com"
-        assert params["port"] == 6380
-        assert params["db"] == 2
-        assert params["password"] == "mypassword"
+    def test_get_url_preserves_auth(self):
+        # Username (ACL) and password must survive — the old manual parse dropped the username
+        c = RedisConnector("redis://myuser:mypassword@redis.example.com:6380/2")
+        assert c._get_url() == "redis://myuser:mypassword@redis.example.com:6380/2"
 
-    def test_parse_uri_ssl(self):
+    def test_get_url_ssl(self):
         c = RedisConnector("rediss://host:6379/0")
-        params = c._parse_uri()
-        assert params["ssl"] is True
+        assert c._get_url().startswith("rediss://")
 
-    def test_parse_uri_no_scheme(self):
+    def test_get_url_no_scheme(self):
         c = RedisConnector("localhost:6379")
-        params = c._parse_uri()
-        assert params["host"] == "localhost"
+        assert c._get_url() == "redis://localhost:6379"
 
     def test_validate_success(self):
         mock_redis = MagicMock()
         mock_client = MagicMock()
         mock_client.ping.return_value = True
-        mock_redis.Redis.return_value = mock_client
+        mock_redis.from_url.return_value = mock_client
 
         with patch.dict(sys.modules, {"redis": mock_redis}):
             c = RedisConnector("redis://localhost:6379/0")
@@ -53,12 +44,24 @@ class TestRedisConnector:
         mock_redis = MagicMock()
         mock_client = MagicMock()
         mock_client.ping.side_effect = Exception("Connection refused")
-        mock_redis.Redis.return_value = mock_client
+        mock_redis.from_url.return_value = mock_client
 
         with patch.dict(sys.modules, {"redis": mock_redis}):
             c = RedisConnector("redis://localhost:6379/0")
             with pytest.raises(ConnectionError, match="Cannot connect"):
                 c.validate()
+
+    def test_no_password_in_metadata(self):
+        mock_redis = MagicMock()
+        mock_client = MagicMock()
+        mock_client.scan.return_value = (0, [])
+        mock_client.dbsize.return_value = 0
+        mock_redis.from_url.return_value = mock_client
+
+        with patch.dict(sys.modules, {"redis": mock_redis}):
+            c = RedisConnector("redis://user:secret@localhost:6379/0")
+            schema = c.inspect()
+            assert "secret" not in str(schema.metadata)
 
     def test_inspect_string_keys(self):
         mock_redis = MagicMock()
@@ -66,7 +69,7 @@ class TestRedisConnector:
         mock_client.scan.return_value = (0, ["cache:page1", "cache:page2"])
         mock_client.type.return_value = "string"
         mock_client.dbsize.return_value = 2
-        mock_redis.Redis.return_value = mock_client
+        mock_redis.from_url.return_value = mock_client
 
         with patch.dict(sys.modules, {"redis": mock_redis}):
             c = RedisConnector("redis://localhost:6379/0")
@@ -82,7 +85,7 @@ class TestRedisConnector:
         mock_client.type.return_value = "hash"
         mock_client.hkeys.return_value = ["name", "email"]
         mock_client.dbsize.return_value = 2
-        mock_redis.Redis.return_value = mock_client
+        mock_redis.from_url.return_value = mock_client
 
         with patch.dict(sys.modules, {"redis": mock_redis}):
             c = RedisConnector("redis://localhost:6379/0")
@@ -101,7 +104,7 @@ class TestRedisConnector:
         mock_client.scan.return_value = (0, keys)
         mock_client.type.side_effect = lambda k: types_map.get(k, "string")
         mock_client.dbsize.return_value = 2
-        mock_redis.Redis.return_value = mock_client
+        mock_redis.from_url.return_value = mock_client
 
         with patch.dict(sys.modules, {"redis": mock_redis}):
             c = RedisConnector("redis://localhost:6379/0")
@@ -114,7 +117,7 @@ class TestRedisConnector:
         mock_client.scan.return_value = (0, ["tags:active"])
         mock_client.type.return_value = "set"
         mock_client.dbsize.return_value = 1
-        mock_redis.Redis.return_value = mock_client
+        mock_redis.from_url.return_value = mock_client
 
         with patch.dict(sys.modules, {"redis": mock_redis}):
             c = RedisConnector("redis://localhost:6379/0")
@@ -129,7 +132,7 @@ class TestRedisConnector:
         mock_client.scan.return_value = (0, ["leaderboard"])
         mock_client.type.return_value = "zset"
         mock_client.dbsize.return_value = 1
-        mock_redis.Redis.return_value = mock_client
+        mock_redis.from_url.return_value = mock_client
 
         with patch.dict(sys.modules, {"redis": mock_redis}):
             c = RedisConnector("redis://localhost:6379/0")

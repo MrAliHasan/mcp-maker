@@ -33,6 +33,14 @@ Supported extensions: `.xlsx`, `.xlsm`, `.xltx`, `.xltm`
 
 ## What Gets Generated
 
+### New in 0.2.7
+
+- `filter_{sheet}(field, value, operator)` — eq/ne/gt/gte/lt/lte/contains filtering
+- `aggregate_{sheet}(group_by, agg_function, agg_column)` — count/sum/avg/min/max
+- `distinct_{sheet}(field)` — distinct values of a column
+- Date/datetime cells are now typed as `date`/`datetime` instead of strings
+- Duplicate headers are de-duplicated; large sheets are sampled instead of fully loaded during inspection
+
 Each sheet in your Excel file becomes a table. The **first row** is used as column headers.
 
 ### Read Tools (always generated)

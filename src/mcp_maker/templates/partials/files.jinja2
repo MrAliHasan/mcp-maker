@@ -1,6 +1,8 @@
 # ─── File Data Source ───
 
-DATA_DIR = _os.path.abspath(DATABASE_URL or ".")
+DATA_PATH = _os.path.abspath(DATABASE_URL or ".")
+# Single-file mode: DATABASE_URL may point directly at a CSV/TSV/JSON/JSONL file
+DATA_DIR = _os.path.dirname(DATA_PATH) if _os.path.isfile(DATA_PATH) else DATA_PATH
 
 def _safe_filepath(filename: str) -> str:
     path = _os.path.abspath(_os.path.join(DATA_DIR, filename))
@@ -9,16 +11,68 @@ def _safe_filepath(filename: str) -> str:
         raise ValueError(f"Path traversal detected: {filename}")
     return path
 
+
+def _load_rows(filename: str, field_map: dict) -> list[dict]:
+    """Load a data file as a list of dicts keyed by safe column names.
+
+    field_map maps safe column name -> original header/key in the file.
+    """
+    filepath = _safe_filepath(filename)
+    if not _os.path.exists(filepath):
+        return []
+    ext = _os.path.splitext(filename)[1].lower()
+
+    raw_rows: list[dict] = []
+    if ext in (".csv", ".tsv"):
+        delimiter = "\t" if ext == ".tsv" else ","
+        with open(filepath, "r", encoding="utf-8-sig", newline="") as f:
+            raw_rows = list(csv.DictReader(f, delimiter=delimiter))
+    elif ext == ".json":
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        raw_rows = data if isinstance(data, list) else [data]
+    elif ext == ".jsonl":
+        with open(filepath, "r", encoding="utf-8") as f:
+            raw_rows = [json.loads(line) for line in f if line.strip()]
+
+    # Remap original keys to safe column names
+    return [
+        {safe: row.get(original) for safe, original in field_map.items()}
+        for row in raw_rows
+        if isinstance(row, dict)
+    ]
+
+
+def _sort_key(value):
+    """Sort mixed data numerically when possible, else as strings."""
+    if value is None or value == "":
+        return (2, "")
+    try:
+        return (0, float(value))
+    except (TypeError, ValueError):
+        return (1, str(value).lower())
+
 {% for table in tables %}
 {% set tbl_ops = rbac_config.get(table.name | lower, ops) if rbac_config else ops %}
+{% set src_file = schema.metadata.get('file_map', {}).get(table.name, table.name ~ '.csv') %}
 
 # ═══════════════════════════════════════════════════════
-# File: {{ table.name }}
+# File: {{ src_file }} → {{ table.name }}
 # Columns: {{ table.columns | map(attribute='name') | join(', ') }}
 {% if table.row_count is not none %}
 # Rows: {{ table.row_count }}
 {% endif %}
 # ═══════════════════════════════════════════════════════
+
+_{{ table.name }}_fields = {
+    {% for col in table.columns %}
+    "{{ col.name }}": "{{ col.description or col.name }}",
+    {% endfor %}
+}
+
+
+def _load_{{ table.name }}() -> list[dict]:
+    return _load_rows("{{ src_file }}", _{{ table.name }}_fields)
 
 
 {% if 'read' in tbl_ops %}
@@ -29,7 +83,7 @@ def list_{{ table.name }}(limit: int = {{ default_limit }}, offset: int = 0, sor
     Args:
         limit: Maximum rows to return (default: {{ default_limit }}, max: {{ max_limit }}).
         offset: Number of rows to skip for pagination.
-        sort_field: Column name to sort by.
+        sort_field: Column name to sort by (numeric-aware).
         sort_direction: 'asc' or 'desc' (default: 'asc').
         fields: Comma-separated column names to return (default: all).
 
@@ -38,23 +92,10 @@ def list_{{ table.name }}(limit: int = {{ default_limit }}, offset: int = 0, sor
     """
     try:
         limit = min(limit, {{ max_limit }})
-        filepath = _safe_filepath("{{ table.name }}.csv")
-        if _os.path.exists(filepath):
-            with open(filepath, "r", encoding="utf-8-sig") as f:
-                reader = csv.DictReader(f)
-                all_rows = list(reader)
-        else:
-            filepath = _safe_filepath("{{ table.name }}.json")
-            if _os.path.exists(filepath):
-                with open(filepath, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                all_rows = data if isinstance(data, list) else [data]
-            else:
-                all_rows = []
-
+        all_rows = _load_{{ table.name }}()
         total = len(all_rows)
         if sort_field:
-            all_rows = sorted(all_rows, key=lambda r: str(r.get(sort_field, "")), reverse=(sort_direction.lower() == "desc"))
+            all_rows = sorted(all_rows, key=lambda r: _sort_key(r.get(sort_field)), reverse=(sort_direction.lower() == "desc"))
         rows = all_rows[offset:offset + limit]
         if fields:
             selected = [f.strip() for f in fields.split(",") if f.strip()]
@@ -76,7 +117,7 @@ def get_{{ table.name }}_by_row(row_number: int) -> dict | None:
         row_number: The row index (0 = first data row).
     """
     try:
-        all_rows = list_{{ table.name }}(limit=100000)
+        all_rows = _load_{{ table.name }}()
         if 0 <= row_number < len(all_rows):
             result = dict(all_rows[row_number])
             result["_row_number"] = row_number
@@ -84,11 +125,7 @@ def get_{{ table.name }}_by_row(row_number: int) -> dict | None:
         return None
     except Exception as e:
         raise RuntimeError(f"get_{{ table.name }}_by_row failed: {e}") from e
-{% endif %}
 
-
-
-{% if 'read' in tbl_ops %}
 @mcp.tool()
 def search_{{ table.name }}(query: str, limit: int = {{ default_limit }}) -> list[dict]:
     """Search the '{{ table.name }}' dataset for matching records.
@@ -101,25 +138,132 @@ def search_{{ table.name }}(query: str, limit: int = {{ default_limit }}) -> lis
         List of matching records.
     """
     try:
-        all_rows = list_{{ table.name }}(limit=10000)
+        limit = min(limit, {{ max_limit }})
         query_lower = query.lower()
         results = []
-        for row in all_rows:
-            for value in row.values():
-                if query_lower in str(value).lower():
-                    results.append(row)
+        for row in _load_{{ table.name }}():
+            if any(query_lower in str(v).lower() for v in row.values() if v is not None):
+                results.append(row)
+                if len(results) >= limit:
                     break
-            if len(results) >= limit:
-                break
         return results
     except Exception as e:
         raise RuntimeError(f"search_{{ table.name }} failed: {e}") from e
 
 @mcp.tool()
+def filter_{{ table.name }}(field: str, value: str, operator: str = "eq", limit: int = {{ default_limit }}) -> list[dict]:
+    """Filter '{{ table.name }}' records by a field comparison.
+
+    Args:
+        field: Column name to filter on.
+        value: Value to compare against.
+        operator: 'eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'contains' (default: 'eq').
+        limit: Maximum results.
+    """
+    if field not in _{{ table.name }}_fields:
+        raise ValueError(f"Invalid field: {field}. Available: {', '.join(_{{ table.name }}_fields)}")
+    try:
+        limit = min(limit, {{ max_limit }})
+
+        def _cmp(row_val):
+            if row_val is None:
+                return False
+            if operator == "contains":
+                return str(value).lower() in str(row_val).lower()
+            try:
+                a, b = float(row_val), float(value)
+            except (TypeError, ValueError):
+                a, b = str(row_val), str(value)
+            return {
+                "eq": a == b, "ne": a != b, "gt": a > b,
+                "gte": a >= b, "lt": a < b, "lte": a <= b,
+            }.get(operator, a == b)
+
+        results = []
+        for row in _load_{{ table.name }}():
+            if _cmp(row.get(field)):
+                results.append(row)
+                if len(results) >= limit:
+                    break
+        return results
+    except Exception as e:
+        raise RuntimeError(f"filter_{{ table.name }} failed: {e}") from e
+
+@mcp.tool()
+def aggregate_{{ table.name }}(group_by: str, agg_function: str = "count", agg_column: str | None = None, limit: int = 20) -> list[dict]:
+    """Aggregate '{{ table.name }}' records grouped by a column.
+
+    Args:
+        group_by: Column to group by.
+        agg_function: 'count', 'sum', 'avg', 'min', or 'max'.
+        agg_column: Column to aggregate (required for sum/avg/min/max).
+        limit: Maximum groups to return.
+    """
+    if group_by not in _{{ table.name }}_fields:
+        raise ValueError(f"Invalid group_by: {group_by}. Available: {', '.join(_{{ table.name }}_fields)}")
+    agg_function = agg_function.lower()
+    if agg_function not in ("count", "sum", "avg", "min", "max"):
+        raise ValueError(f"Invalid agg_function: {agg_function}. Use: count, sum, avg, min, max")
+    if agg_function != "count" and not agg_column:
+        raise ValueError(f"agg_column is required for {agg_function}")
+    try:
+        groups: dict = {}
+        for row in _load_{{ table.name }}():
+            key = row.get(group_by)
+            if agg_function == "count":
+                groups[key] = groups.get(key, 0) + 1
+            else:
+                try:
+                    num = float(row.get(agg_column))
+                except (TypeError, ValueError):
+                    continue
+                groups.setdefault(key, []).append(num)
+
+        results = []
+        for key, val in groups.items():
+            if agg_function == "count":
+                value = val
+            elif agg_function == "sum":
+                value = sum(val)
+            elif agg_function == "avg":
+                value = sum(val) / len(val) if val else None
+            elif agg_function == "min":
+                value = min(val) if val else None
+            else:
+                value = max(val) if val else None
+            results.append({"group": key, "value": value})
+        results.sort(key=lambda r: (r["value"] is None, r["value"]), reverse=True)
+        return results[:min(limit, 100)]
+    except Exception as e:
+        raise RuntimeError(f"aggregate_{{ table.name }} failed: {e}") from e
+
+@mcp.tool()
+def distinct_{{ table.name }}(field: str, limit: int = 100) -> list:
+    """Get the distinct values of a column in '{{ table.name }}'.
+
+    Args:
+        field: Column name.
+        limit: Maximum distinct values to return.
+    """
+    if field not in _{{ table.name }}_fields:
+        raise ValueError(f"Invalid field: {field}. Available: {', '.join(_{{ table.name }}_fields)}")
+    try:
+        seen = []
+        for row in _load_{{ table.name }}():
+            v = row.get(field)
+            if v not in seen:
+                seen.append(v)
+                if len(seen) >= limit:
+                    break
+        return seen
+    except Exception as e:
+        raise RuntimeError(f"distinct_{{ table.name }} failed: {e}") from e
+
+@mcp.tool()
 def count_{{ table.name }}() -> int:
     """Get the total number of records in the '{{ table.name }}' dataset."""
     try:
-        return len(list_{{ table.name }}(limit=100000))
+        return len(_load_{{ table.name }}())
     except Exception as e:
         raise RuntimeError(f"count_{{ table.name }} failed: {e}") from e
 

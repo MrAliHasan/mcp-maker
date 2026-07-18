@@ -85,6 +85,12 @@ mcp-maker init notion://abc123def456 --read-write
 
 ## Generated Tools
 
+### New in 0.2.7
+
+- `distinct_{db}(property_name, limit)` — distinct values of a property
+- `count_{db}` is capped at 10,000 pages and reports whether the count is exact
+- Fixed: **server generation for Notion previously crashed with a template error** — it now works
+
 For a Notion workspace with databases `Tasks` and `Contacts`:
 
 ### Read Tools (always generated)

@@ -91,6 +91,15 @@ mcp-maker init gsheet://1BxiMVs0XRA5nFMdKvBdBZjiSfghkH
 
 ## Generated Tools
 
+### New in 0.2.7
+
+- `filter_{sheet}(field, value, operator)` — eq/ne/gt/gte/lt/lte/contains filtering
+- `aggregate_{sheet}(group_by, agg_function, agg_column)` — count/sum/avg/min/max
+- `distinct_{sheet}(field)` — distinct values of a column
+- `list_{sheet}` now supports `sort_field`/`sort_direction` (numeric-aware)
+- Fixed: sheets with duplicate or empty headers no longer break reads
+- Fixed: `count_{sheet}` counts actual data rows (it previously returned the grid size, often 1000)
+
 For a spreadsheet with tabs `Clients` and `Invoices`:
 
 ### Read Tools (always generated)

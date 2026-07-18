@@ -40,6 +40,14 @@ Supports:
 
 ## What Gets Generated
 
+### New in 0.2.7
+
+- `call_api(method, path, query_params, body)` — generic escape hatch for any endpoint
+- **`$ref` schemas are now resolved** — request bodies defined via `#/components/schemas/...` produce full typed parameters
+- Swagger 2.x `in: body` parameters and path-level shared parameters are now supported
+- Three auth styles via env vars: `API_TOKEN` (Bearer), `API_KEY` + `API_KEY_HEADER` (custom header), `API_KEY` + `API_KEY_QUERY` (query param)
+- HTTP errors return structured `{error, status, body}` results instead of raising
+
 Each endpoint in your API spec becomes a tool:
 
 ```
